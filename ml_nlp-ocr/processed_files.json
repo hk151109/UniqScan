@@ -1,0 +1,29 @@
+{
+  "C:\\Users\\gopal\\Projects\\UniqScan\\ml_nlp-ocr\\uploaded_files\\new1.pdf": {
+    "filename": "new1.pdf",
+    "processed_time": "2025-04-26T18:54:40.434713",
+    "success": true,
+    "metadata": {
+      "file_type": "pdf",
+      "characters": 2216
+    }
+  },
+  "C:\\Users\\gopal\\Projects\\UniqScan\\ml_nlp-ocr\\uploaded_files\\Doc1.pdf": {
+    "filename": "Doc1.pdf",
+    "processed_time": "2025-04-26T18:56:12.401202",
+    "success": true,
+    "metadata": {
+      "file_type": "pdf",
+      "characters": 1234
+    }
+  },
+  "C:\\Users\\gopal\\Projects\\UniqScan\\ml_nlp-ocr\\uploaded_files\\New_Harikrishnan_resume.pdf": {
+    "filename": "New_Harikrishnan_resume.pdf",
+    "processed_time": "2025-04-26T18:57:31.152280",
+    "success": true,
+    "metadata": {
+      "file_type": "pdf",
+      "characters": 2975
+    }
+  }
+}

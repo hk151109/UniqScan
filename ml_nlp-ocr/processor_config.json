@@ -1,0 +1,8 @@
+{
+  "scan_interval_minutes": 5,
+  "ocr_languages": "eng",
+  "max_workers": 7,
+  "monitor_mode": "both",
+  "image_quality_factor": 1.5,
+  "last_scan_time": "2025-04-26T20:01:12.617317"
+}
