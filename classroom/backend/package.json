@@ -10,6 +10,7 @@
   "author": "Hüseyin Ensari < hsynensari@gmail.com >",
   "license": "ISC",
   "dependencies": {
+    "axios": "^1.11.0",
     "bcrypt": "^5.0.1",
     "bullmq": "^5.58.0",
     "cookie-parser": "^1.4.6",

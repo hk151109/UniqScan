@@ -192,6 +192,13 @@ const getGradingStatus = asyncHandler(async (req, res, next) => {
   res.json({ ready: isReady, similarityScore: homework.similarityScore, aiGeneratedScore: homework.aiGeneratedScore, plagiarismScore: homework.plagiarismScore, reportPath: homework.reportPath });
 });
 
+// Endpoint to check ML API health
+const checkMLAPIHealth = asyncHandler(async (req, res, next) => {
+  const { checkMLAPIHealth } = require('../services/gradingService');
+  const health = await checkMLAPIHealth();
+  res.json(health);
+});
+
 module.exports = {
   addHomework,
   submitHomework,
@@ -202,4 +209,5 @@ module.exports = {
   sendHomeworkFile,
   deleteHomework,
   getGradingStatus,
+  checkMLAPIHealth,
 };

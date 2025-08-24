@@ -16,6 +16,8 @@ ProjectSchema = new Schema({
   aiGeneratedScore: { type: Number, default: null },
   plagiarismScore: { type: Number, default: null },
   reportPath: { type: String, default: null },
+  gradingCompleted: { type: Boolean, default: false },
+  gradingError: { type: String, default: null },
 });
 
 const Project = mongoose.model("Project", ProjectSchema);

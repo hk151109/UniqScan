@@ -65,4 +65,11 @@ router.get(
   homeworkController.getGradingStatus
 );
 
+router.get(
+  "/ml-health",
+  isAuth,
+  isTeacher,
+  homeworkController.checkMLAPIHealth
+);
+
 module.exports = router;
