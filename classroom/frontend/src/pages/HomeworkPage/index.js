@@ -8,10 +8,11 @@ import {
   fetchHomeworkDetail,
   fetchGradingStatus,
 } from "../../api/homeworkApi";
-import { FaDownload } from "react-icons/fa";
+import { FaDownload, FaEye } from "react-icons/fa";
 import { SiMicrosoftexcel } from "react-icons/si";
 import { saveAs } from "file-saver";
 import RateProjectOffCanvas from "../../components/MyOffCanvas/RateProjectOffCanvas";
+import DocumentViewer from "../../components/DocumentViewer";
 import { AuthContext } from "../../contexts/authContext";
 
 const HomeworkPage = () => {
@@ -21,6 +22,7 @@ const HomeworkPage = () => {
   const [showModals, setShowModals] = useState({}); // Object to track modal state per student
   const [lock, setLock] = useState(false);
   const [gradingStatus, setGradingStatus] = useState({ inProgress: false, processedCount: 0, totalSubmissions: 0 });
+  const [documentViewer, setDocumentViewer] = useState({ show: false, fileUrl: '', fileName: '', fileType: '' });
   const { classroom } = useContext(AuthContext);
 
   useEffect(() => {
@@ -77,6 +79,35 @@ const HomeworkPage = () => {
     saveAs(fetchDownloadHomeworkFile(filename), downloadFileName);
   };
 
+  const viewDocument = (filename, userName, userLastname) => {
+    const homeworkTitle = homework?.title ? homework.title.replace(/[^a-zA-Z0-9]/g, '_') : 'Homework';
+    const displayFileName = userName && userLastname 
+      ? `${userName}_${userLastname}_${homeworkTitle}`
+      : `Project_${homeworkTitle}`;
+    
+    const fileUrl = fetchDownloadHomeworkFile(filename);
+    const fileExtension = filename.split('.').pop()?.toLowerCase();
+    
+    // Determine file type based on extension
+    let fileType = '';
+    if (['pdf'].includes(fileExtension)) {
+      fileType = 'application/pdf';
+    } else if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'].includes(fileExtension)) {
+      fileType = 'image/' + (fileExtension === 'jpg' ? 'jpeg' : fileExtension);
+    } else if (['txt', 'md'].includes(fileExtension)) {
+      fileType = 'text/plain';
+    } else if (fileExtension === 'json') {
+      fileType = 'application/json';
+    }
+
+    setDocumentViewer({
+      show: true,
+      fileUrl: fileUrl,
+      fileName: displayFileName + (fileExtension ? `.${fileExtension}` : ''),
+      fileType: fileType
+    });
+  };
+
   const downloadExcelFile = async (homeworkID) => {
     setLock(true);
     const homeworkTitle = homework?.title ? homework.title.replace(/[^a-zA-Z0-9]/g, '_') : 'Homework';
@@ -94,6 +125,10 @@ const HomeworkPage = () => {
 
   const handleCloseModal = (projectId) => {
     setShowModals(prev => ({ ...prev, [projectId]: false }));
+  };
+
+  const handleCloseDocumentViewer = () => {
+    setDocumentViewer({ show: false, fileUrl: '', fileName: '', fileType: '' });
   };
 
   return (
@@ -169,14 +204,24 @@ const HomeworkPage = () => {
                   <td>{submitter.user.name}</td>
                   <td>{submitter.user.lastname}</td>
                   <td>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => downloadFile(submitter?.file, submitter?.user?.name, submitter?.user?.lastname)}
-                    >
-                      <FaDownload className="me-2" />
-                      Download
-                    </Button>
+                    <div className="d-flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => viewDocument(submitter?.file, submitter?.user?.name, submitter?.user?.lastname)}
+                      >
+                        <FaEye className="me-1" />
+                        View
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => downloadFile(submitter?.file, submitter?.user?.name, submitter?.user?.lastname)}
+                      >
+                        <FaDownload className="me-1" />
+                        Download
+                      </Button>
+                    </div>
                   </td>
                   <td>{submitter.score ? submitter.score : "-"}</td>
                   <td>{submitter.similarityScore !== undefined && submitter.similarityScore !== null ? submitter.similarityScore : '-'}</td>
@@ -227,6 +272,14 @@ const HomeworkPage = () => {
           </Table>
         </>
       )}
+      
+      <DocumentViewer
+        show={documentViewer.show}
+        onHide={handleCloseDocumentViewer}
+        fileUrl={documentViewer.fileUrl}
+        fileName={documentViewer.fileName}
+        fileType={documentViewer.fileType}
+      />
     </Container>
   );
 };
