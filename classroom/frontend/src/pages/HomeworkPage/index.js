@@ -69,13 +69,20 @@ const HomeworkPage = () => {
     };
   }, [homeworkID]);
 
-  const downloadFile = async (filename) => {
-    saveAs(fetchDownloadHomeworkFile(filename), "Project");
+  const downloadFile = async (filename, userName, userLastname) => {
+    const homeworkTitle = homework?.title ? homework.title.replace(/[^a-zA-Z0-9]/g, '_') : 'Homework';
+    const downloadFileName = userName && userLastname 
+      ? `${userName}_${userLastname}_${homeworkTitle}`
+      : `Project_${homeworkTitle}`;
+    saveAs(fetchDownloadHomeworkFile(filename), downloadFileName);
   };
 
   const downloadExcelFile = async (homeworkID) => {
     setLock(true);
-    saveAs(fetchDownloadExcelFile(classroom._id, homeworkID), "StudentGrades");
+    const homeworkTitle = homework?.title ? homework.title.replace(/[^a-zA-Z0-9]/g, '_') : 'Homework';
+    const classroomName = classroom?.name ? classroom.name.replace(/[^a-zA-Z0-9]/g, '_') : 'Classroom';
+    const excelFileName = `${classroomName}_${homeworkTitle}_Grades`;
+    saveAs(fetchDownloadExcelFile(classroom._id, homeworkID), excelFileName);
     setTimeout(() => {
       setLock(false);
     }, 500);
@@ -165,7 +172,7 @@ const HomeworkPage = () => {
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => downloadFile(submitter?.file)}
+                      onClick={() => downloadFile(submitter?.file, submitter?.user?.name, submitter?.user?.lastname)}
                     >
                       <FaDownload className="me-2" />
                       Download
