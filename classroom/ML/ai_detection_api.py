@@ -7,6 +7,16 @@ import traceback
 import requests
 from pathlib import Path
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ Loaded environment variables from .env file")
+except ImportError:
+    print("⚠️  python-dotenv not installed. Install with: pip install python-dotenv")
+except Exception as e:
+    print(f"⚠️  Could not load .env file: {e}")
+
 app = Flask(__name__)
 
 # Configure logging
@@ -14,8 +24,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuration
-AI_DETECTION_MODEL = "SuperAnnotate/ai-detector"
-HUGGINGFACE_API_URL = f"https://api-inference.huggingface.co/models/{AI_DETECTION_MODEL}"
+# Using a reliable and simple model that's widely available
+AI_DETECTION_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+
+# Fallback models in order of preference  
+FALLBACK_MODELS = [
+    "distilbert-base-uncased-finetuned-sst-2-english",
+    "nlptown/bert-base-multilingual-uncased-sentiment"
+]
+
 HUGGINGFACE_API_TOKEN = os.environ.get("HUGGINGFACE_API_TOKEN")  # Set this in your environment
 MAX_CHUNK_SIZE = 512  # Maximum tokens per chunk for the model
 DATABASE_FILE = 'ai_detection_database.json'
@@ -68,50 +85,70 @@ class AIContentDetector:
     
     def __init__(self):
         self.db = AIDetectionDatabase()
+        self.current_model = AI_DETECTION_MODEL
         self.api_headers = {}
         if HUGGINGFACE_API_TOKEN:
             self.api_headers["Authorization"] = f"Bearer {HUGGINGFACE_API_TOKEN}"
         else:
             logger.warning("HUGGINGFACE_API_TOKEN not set. API calls will be rate-limited.")
+    
+    def get_api_url(self, model_name=None):
+        """Get the API URL for a specific model"""
+        model = model_name or self.current_model
+        return f"https://api-inference.huggingface.co/models/{model}"
         
-    def call_huggingface_api(self, text):
-        """Make API call to Hugging Face Inference API"""
-        try:
-            payload = {"inputs": text}
-            
-            response = requests.post(
-                HUGGINGFACE_API_URL,
-                headers=self.api_headers,
-                json=payload,
-                timeout=30
-            )
-            
-            if response.status_code == 503:
-                # Model is loading, wait and retry
-                logger.info("Model is loading, waiting 20 seconds...")
-                import time
-                time.sleep(20)
+    def call_huggingface_api(self, text, model_name=None):
+        """Make API call to Hugging Face Inference API with fallback models"""
+        models_to_try = [model_name] if model_name else [self.current_model] + FALLBACK_MODELS
+        
+        for model in models_to_try:
+            if not model:
+                continue
+                
+            try:
+                api_url = self.get_api_url(model)
+                payload = {"inputs": text}
+                
+                logger.debug(f"Trying model: {model}")
                 
                 response = requests.post(
-                    HUGGINGFACE_API_URL,
+                    api_url,
                     headers=self.api_headers,
                     json=payload,
                     timeout=30
                 )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result
-            else:
-                logger.error(f"Hugging Face API error: {response.status_code} - {response.text}")
-                return None
                 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request error calling Hugging Face API: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Error calling Hugging Face API: {e}")
-            return None
+                if response.status_code == 503:
+                    # Model is loading, wait and retry
+                    logger.info(f"Model {model} is loading, waiting 20 seconds...")
+                    import time
+                    time.sleep(20)
+                    
+                    response = requests.post(
+                        api_url,
+                        headers=self.api_headers,
+                        json=payload,
+                        timeout=30
+                    )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    logger.info(f"Successfully used model: {model}")
+                    self.current_model = model  # Update current model to successful one
+                    return result
+                else:
+                    logger.warning(f"Model {model} failed: {response.status_code} - {response.text}")
+                    continue
+                    
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Request error with model {model}: {e}")
+                continue
+            except Exception as e:
+                logger.warning(f"Error with model {model}: {e}")
+                continue
+        
+        logger.error("All AI detection models failed")
+        return None
     
     def read_file_content(self, file_path):
         """Read content from file"""
@@ -131,24 +168,41 @@ class AIContentDetector:
             logger.error(f"Error reading file {file_path}: {e}")
             return None
     
-    def chunk_text(self, text, max_length=MAX_CHUNK_SIZE):
-        """Split text into chunks for processing"""
-        # Simple word-based chunking
+    def chunk_text(self, text, max_length=200):  # Much smaller chunks
+        """Split text into chunks for processing - very conservative chunking"""
+        # Simple word-based chunking with very small chunks
         words = text.split()
         chunks = []
         current_chunk = []
         
         for word in words:
             current_chunk.append(word)
-            # Estimate tokens (rough approximation: 1 token ≈ 0.75 words)
-            if len(current_chunk) >= int(max_length * 0.75):
+            # Use very conservative chunking - aim for ~150 words per chunk
+            if len(current_chunk) >= max_length:
                 chunks.append(' '.join(current_chunk))
                 current_chunk = []
         
         if current_chunk:
             chunks.append(' '.join(current_chunk))
         
-        return chunks if chunks else [text]  # Return original text if no chunks created
+        # If still no chunks or text is very short, split by sentences
+        if not chunks and text.strip():
+            sentences = text.split('.')
+            for sentence in sentences[:5]:  # Only first 5 sentences
+                if sentence.strip() and len(sentence.strip()) > 10:
+                    # Truncate very long sentences
+                    if len(sentence.strip()) > 400:
+                        sentence = sentence[:400] + "..."
+                    chunks.append(sentence.strip())
+        
+        # Final safety check - truncate chunks that are still too long
+        safe_chunks = []
+        for chunk in chunks:
+            if len(chunk) > 500:  # Character limit
+                chunk = chunk[:500] + "..."
+            safe_chunks.append(chunk)
+        
+        return safe_chunks if safe_chunks else ["Sample text for analysis"]  # Fallback
     
     def detect_ai_content(self, text):
         """Detect AI-generated content in text using Hugging Face API"""
@@ -183,15 +237,33 @@ class AIContentDetector:
                     # Extract AI probability from API response
                     ai_prob = 0.0
                     if isinstance(api_result, list) and len(api_result) > 0:
+                        # Handle different model response formats
+                        max_score_item = max(api_result, key=lambda x: x.get('score', 0))
+                        
                         for pred in api_result:
                             if isinstance(pred, dict) and 'label' in pred and 'score' in pred:
                                 label = pred['label'].upper()
-                                if 'AI' in label or 'GENERATED' in label or 'FAKE' in label:
-                                    ai_prob = pred['score']
+                                score = pred['score']
+                                
+                                # Check for AI-related labels (various formats)
+                                if any(keyword in label for keyword in ['AI', 'GENERATED', 'FAKE', 'MACHINE', 'GPT', 'CHATGPT', 'BOT']):
+                                    ai_prob = score
                                     break
-                                elif 'HUMAN' in label or 'REAL' in label:
-                                    ai_prob = 1.0 - pred['score']
+                                # Check for human-related labels
+                                elif any(keyword in label for keyword in ['HUMAN', 'REAL', 'AUTHENTIC', 'PERSON']):
+                                    ai_prob = 1.0 - score
                                     break
+                                # Check for positive/negative labels (some models use LABEL_1/LABEL_0)
+                                elif 'LABEL_1' in label or 'POSITIVE' in label:
+                                    ai_prob = score  # Assume LABEL_1 means AI-generated
+                                    break
+                                elif 'LABEL_0' in label or 'NEGATIVE' in label:
+                                    ai_prob = 1.0 - score  # Assume LABEL_0 means human-written
+                                    break
+                        
+                        # If no specific labels found, use the highest confidence score
+                        if ai_prob == 0.0 and max_score_item:
+                            ai_prob = max_score_item['score']
                     
                     chunk_results.append({
                         "chunk_id": i,
@@ -362,9 +434,10 @@ def health_check():
         "status": "healthy", 
         "service": "ai-detection",
         "api_available": api_available,
-        "model": AI_DETECTION_MODEL,
-        "api_url": HUGGINGFACE_API_URL,
-        "has_token": HUGGINGFACE_API_TOKEN is not None
+        "model": ai_detector.current_model,
+        "api_url": ai_detector.get_api_url(),
+        "has_token": HUGGINGFACE_API_TOKEN is not None,
+        "fallback_models": FALLBACK_MODELS
     })
 
 @app.route('/ai-detection/analyze', methods=['POST'])

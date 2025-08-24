@@ -8,6 +8,16 @@ import requests
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ Loaded environment variables from .env file")
+except ImportError:
+    print("⚠️  python-dotenv not installed. Install with: pip install python-dotenv")
+except Exception as e:
+    print(f"⚠️  Could not load .env file: {e}")
+
 # Import our custom modules
 from similarity_api import SimilarityChecker
 from ai_detection_api import AIContentDetector
@@ -134,24 +144,29 @@ class UnifiedGradingService:
             try:
                 logger.info(f"Processing AI detection for {student_name}")
                 
-                # Ensure AI model is loaded
-                if not self.ai_detector.model_loaded:
-                    self.ai_detector.load_model()
-                
-                if not self.ai_detector.model_loaded:
-                    raise Exception("AI detection model not available")
-                
                 # Read file content (reuse if already read)
                 if 'file_content' not in locals():
                     file_content = self.ai_detector.read_file_content(file_path)
                     if file_content is None:
                         raise Exception("Unable to read file content")
                 
-                # Perform AI content detection
-                ai_score, detailed_results = self.ai_detector.detect_ai_content(file_content)
+                # Perform AI content detection using Hugging Face API
+                ai_result = self.ai_detector.detect_ai_content(file_content)
+                
+                if ai_result is None or len(ai_result) != 2:
+                    raise Exception("AI detection returned invalid results")
+                
+                ai_score, detailed_results = ai_result
                 
                 if ai_score is None:
-                    raise Exception("AI detection failed")
+                    raise Exception("AI detection failed to produce score")
+                
+                # Ensure detailed_results is a list
+                if detailed_results is None:
+                    detailed_results = []
+                elif isinstance(detailed_results, str):
+                    # If it's an error message, wrap it
+                    detailed_results = [{"error": detailed_results}]
                 
                 # Generate AI detection report
                 ai_report_path = self.ai_detector.generate_ai_report(
@@ -456,12 +471,21 @@ unified_service = UnifiedGradingService()
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
+    # Test AI API connectivity
+    ai_api_available = False
+    try:
+        test_result = ai_detector.call_huggingface_api("Test")
+        ai_api_available = test_result is not None
+    except:
+        ai_api_available = False
+    
     return jsonify({
         "status": "healthy",
         "service": "unified-grading-service",
         "similarity_service": "available",
         "ai_detection_service": "available",
-        "ai_model_loaded": ai_detector.model_loaded
+        "ai_api_available": ai_api_available,
+        "huggingface_token_set": os.environ.get("HUGGINGFACE_API_TOKEN") is not None
     })
 
 @app.route('/grade/analyze', methods=['POST'])
@@ -588,7 +612,8 @@ def get_unified_stats():
                 "high_ai_content": len([r for r in ai_stats.get("results", []) if r.get("ai_score", 0) > 0.7])
             },
             "model_status": {
-                "ai_model_loaded": ai_detector.model_loaded
+                "ai_api_available": os.environ.get("HUGGINGFACE_API_TOKEN") is not None,
+                "using_huggingface_api": True
             }
         })
     except Exception as e:
@@ -596,11 +621,18 @@ def get_unified_stats():
         return jsonify({"error": "Internal server error"}), 500
 
 if __name__ == '__main__':
-    # Load AI model on startup
+    # Initialize unified grading service
     logger.info("Starting unified grading service...")
+    logger.info("Using Hugging Face API for AI detection - no model loading required")
+    
+    # Test API connectivity on startup
     try:
-        ai_detector.load_model()
+        test_result = ai_detector.call_huggingface_api("Test startup")
+        if test_result:
+            logger.info(f"✅ AI API connectivity verified using model: {ai_detector.current_model}")
+        else:
+            logger.warning("⚠️  AI API connectivity test failed - will retry during requests")
     except Exception as e:
-        logger.warning(f"Failed to load AI model on startup: {e}")
+        logger.warning(f"AI API startup test failed: {e}")
     
     app.run(debug=True, host='0.0.0.0', port=5000)
