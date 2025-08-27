@@ -2,13 +2,13 @@ from flask import Flask, request, jsonify
 import os
 import json
 import logging
-from logging.handlers import RotatingFileHandler
 import nltk
 import time
 import random
 import hashlib
 import requests
 import tempfile
+import shutil
 from datetime import datetime
 from difflib import SequenceMatcher
 from nltk.metrics.distance import edit_distance as editDistance
@@ -17,823 +17,6 @@ from nltk.util import ngrams
 from pathlib import Path
 import re
 from urllib.parse import urlparse
-from flask import Flask, request, jsonify
-import os
-import logging
-from logging.handlers import RotatingFileHandler
-import nltk
-import time
-import random
-import hashlib
-import requests
-import tempfile
-from datetime import datetime
-from difflib import SequenceMatcher
-from nltk.metrics.distance import edit_distance as editDistance
-from nltk.stem.lancaster import LancasterStemmer
-from nltk.util import ngrams
-import re
-from urllib.parse import urlparse
-from werkzeug.utils import secure_filename
-
-# PDF/OCR Processing imports
-import pytesseract
-from PIL import Image, ImageEnhance
-import fitz  # PyMuPDF for handling PDFs
-import cv2
-import numpy as np
-import traceback
-from docx import Document
-from pptx import Presentation
-import csv
-import platform
-
-# ---------------------------------------------
-# App and Config
-# ---------------------------------------------
-app = Flask(__name__)
-
-# Easy-tweak matching params
-THRESHOLD = 3       # --threshold
-CUTOFF = 5          # --cutoff
-NGRAM = 3           # --ngram
-MIN_DISTANCE = 8    # --distance
-
-BASE_DIR = os.path.dirname(__file__)
-CORPUS_DIR = os.path.join(BASE_DIR, 'corpus')
-LOGS_DIR = os.path.join(BASE_DIR, 'logs')
-LOG_FILE = os.path.join(LOGS_DIR, 'api.log')
-
-os.makedirs(CORPUS_DIR, exist_ok=True)
-from urllib.parse import urlparse
-
-logger = logging.getLogger('plagiarism_api')
-logger.setLevel(logging.DEBUG)
-if not logger.handlers:
-    fh = RotatingFileHandler(LOG_FILE, maxBytes=2_000_000, backupCount=5, encoding='utf-8')
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s'))
-    logger.addHandler(fh)
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    logger.addHandler(ch)
-
-# Tesseract on Windows
-if platform.system() == "Windows":
-    pytesseract.pytesseract.tesseract_cmd = r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
-
-# In-memory scores history
-user_scores_log = {}
-
-# ---------------------------------------------
-# PDF/Image/Text processors
-# ---------------------------------------------
-class PDFProcessor:
-    def __init__(self):
-        self.check_tesseract_installation()
-
-    def check_tesseract_installation(self):
-        try:
-            pytesseract.get_tesseract_version()
-            logger.info(f"Tesseract version: {pytesseract.get_tesseract_version()}")
-            return True
-        except Exception as e:
-            logger.warning(f"Tesseract not configured: {e}")
-            return False
-
-    def preprocess_image(self, image, q=1.5):
-        try:
-            enhanced = image.copy()
-            enhanced = ImageEnhance.Contrast(enhanced).enhance(q)
-            enhanced = ImageEnhance.Sharpness(enhanced).enhance(q)
-            arr = np.array(enhanced)
-            if len(arr.shape) == 2:
-                arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2RGB)
-            gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-            blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-            kernel = np.ones((1, 1), np.uint8)
-            morph = cv2.morphologyEx(blurred, cv2.MORPH_CLOSE, kernel)
-            binary = cv2.adaptiveThreshold(morph, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_, cv2.THRESH_BINARY, 11, 2)
-            binary = cv2.dilate(binary, kernel, iterations=1)
-            return enhanced, Image.fromarray(binary)
-        except Exception as e:
-            logger.error(f"preprocess_image error: {e}")
-            return image, image
-
-    def perform_ocr(self, image, lang="eng", config='--psm 6'):
-        try:
-            _, bin_img = self.preprocess_image(image)
-            ocr = pytesseract.image_to_data(bin_img, lang=lang, config=config, output_type=pytesseract.Output.DICT)
-            parts = []
-            for i, conf in enumerate(ocr['conf']):
-                try:
-                    if float(conf) > 30 and ocr['text'][i].strip():
-                        parts.append(ocr['text'][i])
-                except Exception:
-                    continue
-            text = re.sub(r'\s+', ' ', ' '.join(parts)).strip()
-            return text
-        except Exception as e:
-            logger.error(f"OCR error: {e}")
-            return ""
-
-    def extract_text_from_pdf(self, file_path):
-        try:
-            doc = fitz.open(file_path)
-            out = []
-            for idx in range(len(doc)):
-                page = doc.load_page(idx)
-                text = page.get_text()
-                if len(text.strip()) > 50:
-                    out.append(f"\n\n--- Page {idx+1} ---\n\n{text}")
-                else:
-                    try:
-                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                        ocr_text = self.perform_ocr(img)
-                        if ocr_text.strip():
-                            out.append(f"\n\n--- Page {idx+1} (OCR) ---\n\n{ocr_text}")
-                    except Exception as e:
-                        logger.error(f"Page OCR error p{idx}: {e}")
-                for j, info in enumerate(page.get_images(full=True)):
-                    try:
-                        xref = info[0]
-                        base = fitz.Pixmap(doc, xref)
-                        if base.n < 5:
-                            pil = Image.frombytes("RGB", [base.width, base.height], base.samples)
-                        else:
-                            cmyk = fitz.Pixmap(fitz.csRGB, base)
-                            pil = Image.frombytes("RGB", [cmyk.width, cmyk.height], cmyk.samples)
-                        if pil.width >= 50 and pil.height >= 50:
-                            text_i = self.perform_ocr(pil)
-                            if text_i.strip():
-                                out.append(f"\n\n--- Page {idx+1}, Image {j+1} (OCR) ---\n\n{text_i}")
-                    except Exception as e:
-                        logger.error(f"Image OCR error p{idx}i{j}: {e}")
-                        continue
-            doc.close()
-            return '\n'.join(out).strip()
-        except Exception as e:
-            logger.error(f"PDF extract error: {e}\n{traceback.format_exc()}")
-            return f"Error extracting content from PDF: {str(e)}"
-
-    def extract_text_from_docx(self, file_path):
-        try:
-            doc = Document(file_path)
-            segs = []
-            for p in doc.paragraphs:
-                if p.text.strip():
-                    segs.append(p.text)
-            for table in doc.tables:
-                for row in table.rows:
-                    cells = [c.text.strip() for c in row.cells if c.text.strip()]
-                    if cells:
-                        segs.append(' | '.join(cells))
-            return '\n\n'.join(segs)
-        except Exception as e:
-            logger.error(f"DOCX extract error: {e}")
-            return f"Error extracting content from DOCX: {str(e)}"
-
-    def extract_text_from_pptx(self, file_path):
-        try:
-            prs = Presentation(file_path)
-            segs = []
-            for s_idx, slide in enumerate(prs.slides):
-                slide_text = [f"--- Slide {s_idx+1} ---"]
-                for shape in slide.shapes:
-                    if hasattr(shape, 'text') and shape.text.strip():
-                        slide_text.append(shape.text.strip())
-                if len(slide_text) > 1:
-                    segs.append('\n'.join(slide_text))
-            return '\n\n'.join(segs)
-        except Exception as e:
-            logger.error(f"PPTX extract error: {e}")
-            return f"Error extracting content from PPTX: {str(e)}"
-
-    def extract_text_from_txt(self, file_path):
-        try:
-            for enc in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
-                try:
-                    with open(file_path, 'r', encoding=enc) as f:
-                        return f.read()
-                except UnicodeDecodeError:
-                    continue
-            with open(file_path, 'rb') as f:
-                return f.read().decode('utf-8', errors='replace')
-        except Exception as e:
-            logger.error(f"TXT read error: {e}")
-            return f"Error reading text file: {str(e)}"
-
-    def extract_text_from_csv(self, file_path):
-        try:
-            segs = []
-            for enc in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
-                try:
-                    with open(file_path, 'r', encoding=enc) as f:
-                        for i, row in enumerate(csv.reader(f)):
-                            if i > 100:
-                                segs.append('...truncated, showing first 100 rows...')
-                                break
-                            segs.append(' '.join(row))
-                    return '\n'.join(segs)
-                except UnicodeDecodeError:
-                    continue
-            return 'Error: Could not decode CSV file'
-        except Exception as e:
-            logger.error(f"CSV read error: {e}")
-            return f"Error reading CSV file: {str(e)}"
-
-    def extract_text_from_image(self, file_path):
-        try:
-            img = Image.open(file_path)
-            text = self.perform_ocr(img)
-            return text if text.strip() else 'No text detected in image'
-        except Exception as e:
-            logger.error(f"Image process error: {e}")
-            return f"Error processing image file: {str(e)}"
-
-    def process_file_content(self, file_path, content_type=None):
-        try:
-            if not content_type:
-                _, ext = os.path.splitext(file_path)
-                ext = ext.lower().lstrip('.')
-            else:
-                if '/' in content_type:
-                    ext = content_type.split('/')[-1]
-                else:
-                    _, ext = os.path.splitext(file_path)
-                    ext = ext.lower().lstrip('.')
-            if ext == 'pdf':
-                return self.extract_text_from_pdf(file_path)
-            if ext in ['docx', 'doc']:
-                return self.extract_text_from_docx(file_path)
-            if ext in ['pptx', 'ppt']:
-                return self.extract_text_from_pptx(file_path)
-            if ext == 'txt':
-                return self.extract_text_from_txt(file_path)
-            if ext == 'csv':
-                return self.extract_text_from_csv(file_path)
-            if ext in ['jpg', 'jpeg', 'png', 'bmp', 'tiff', 'tif', 'gif']:
-                return self.extract_text_from_image(file_path)
-            logger.warning(f"Unknown file type: {ext}. Attempting text extraction as txt.")
-            return self.extract_text_from_txt(file_path)
-        except Exception as e:
-            logger.error(f"Process file error: {e}")
-            return f"Error processing file: {str(e)}"
-
-# ---------------------------------------------
-# Tokenization and matching
-# ---------------------------------------------
-class Text:
-    def __init__(self, raw_text, label, filepath, removeStopwords=True):
-        self.text = ' \n '.join(raw_text) if isinstance(raw_text, list) else raw_text
-        self.label = label
-        self.filepath = filepath
-        self.preprocess(self.text)
-        self.tokens = self.getTokens(removeStopwords)
-        self.trigrams = self.ngrams(3)
-        self.checksum = hashlib.md5(self.text.encode()).hexdigest()
-
-    def preprocess(self, text):
-        self.text = re.sub(r'([A-Za-z])- ([a-z])', r'\1\2', text)
-
-    def getTokens(self, removeStopwords=True):
-        tokenizer = nltk.RegexpTokenizer('[a-zA-Z]\\w+\'?\\w*')
-        spans = list(tokenizer.span_tokenize(self.text))
-        self.length = spans[-1][-1] if spans else 0
-        tokens = [t.lower() for t in tokenizer.tokenize(self.text)]
-        stemmer = LancasterStemmer()
-        tokens = [stemmer.stem(t) for t in tokens]
-        if not removeStopwords:
-            self.spans = spans
-            return tokens
-        stopwords = set(nltk.corpus.stopwords.words('english'))
-        tokenSpans = [(t, s) for t, s in zip(tokens, spans) if t not in stopwords]
-        self.spans = [s for _, s in tokenSpans]
-        return [t for t, _ in tokenSpans]
-
-    def ngrams(self, n):
-        return list(ngrams(self.tokens, n))
-
-class ExtendedMatch:
-    def __init__(self, a, b, sizeA, sizeB):
-        self.a = a
-        self.b = b
-        self.sizeA = sizeA
-        self.sizeB = sizeB
-        self.healed = False
-        self.extendedBackwards = 0
-        self.extendedForwards = 0
-
-class Matcher:
-    def __init__(self, textObjA, textObjB, threshold=3, cutoff=5, ngramSize=3, removeStopwords=True, minDistance=8, silent=True):
-        self.threshold = threshold
-        self.ngramSize = ngramSize
-        self.minDistance = minDistance
-        self.silent = silent
-        self.textA = textObjA
-        self.textB = textObjB
-        self.textAgrams = self.textA.ngrams(ngramSize)
-        self.textBgrams = self.textB.ngrams(ngramSize)
-        self.initial_matches = self.get_initial_matches()
-        self.healed_matches = self.heal_neighboring_matches()
-        self.extended_matches = self.extend_matches()
-        self.extended_matches = [m for m in self.extended_matches if min(m.sizeA, m.sizeB) >= cutoff]
-        self.numMatches = len(self.extended_matches)
-        self.similarity_score = self.calculate_similarity()
-
-    def calculate_similarity(self):
-        if not self.extended_matches:
-            return 0.0
-        total_matched_tokens_A = sum(m.sizeA for m in self.extended_matches)
-        total_tokens_A = len(self.textA.tokens)
-        if total_tokens_A == 0:
-            return 0.0
-        return round((total_matched_tokens_A / total_tokens_A) * 100, 2)
-
-    def get_initial_matches(self):
-        seq = SequenceMatcher(None, self.textAgrams, self.textBgrams)
-        return [m for m in seq.get_matching_blocks() if m.size > self.threshold]
-
-    def getTokensText(self, text, start, length):
-        start = max(0, start)
-        if start >= len(text.spans) or start + length > len(text.spans):
-            return ""
-        spans = text.spans[start:start + length]
-        return text.text[spans[0][0]:spans[-1][-1]] if spans else ""
-
-    def heal_neighboring_matches(self):
-        healed = []
-        matches = self.initial_matches.copy()
-        if len(matches) == 1:
-            m = matches[0]
-            healed.append(ExtendedMatch(m.a, m.b, m.size, m.size))
-            return healed
-        ignoreNext = False
-        for i, m in enumerate(matches):
-            if i + 1 > len(matches) - 1:
-                break
-            n = matches[i + 1]
-            if ignoreNext:
-                ignoreNext = False
-                continue
-            if (n.a - (m.a + m.size)) < MIN_DISTANCE:
-                sizeA = (n.a + n.size) - m.a
-                sizeB = (n.b + n.size) - m.b
-                h = ExtendedMatch(m.a, m.b, sizeA, sizeB)
-                h.healed = True
-                healed.append(h)
-                ignoreNext = True
-            else:
-                healed.append(ExtendedMatch(m.a, m.b, m.size, m.size))
-        return healed
-
-    def edit_ratio(self, wordA, wordB):
-        distance = editDistance(wordA, wordB)
-        avg = (len(wordA) + len(wordB)) / 2
-        return distance / avg if avg else 1.0
-
-    def extend_matches(self, cutoff=0.4):
-        extended = False
-        for m in self.healed_matches:
-            if m.a > 0 and m.b > 0 and len(self.textAgrams) > m.a - 1 and len(self.textBgrams) > m.b - 1:
-                wordA = self.textAgrams[(m.a - 1)][0]
-                wordB = self.textBgrams[(m.b - 1)][0]
-                if self.edit_ratio(wordA, wordB) < cutoff:
-                    m.a -= 1
-                    m.b -= 1
-                    m.sizeA += 1
-                    m.sizeB += 1
-                    m.extendedBackwards += 1
-                    extended = True
-            idxA = m.a + m.sizeA + 1
-            idxB = m.b + m.sizeB + 1
-            if idxA >= len(self.textAgrams) or idxB >= len(self.textBgrams):
-                continue
-            wordA = self.textAgrams[idxA][-1] if idxA < len(self.textAgrams) else ""
-            wordB = self.textBgrams[idxB][-1] if idxB < len(self.textBgrams) else ""
-            if wordA and wordB and self.edit_ratio(wordA, wordB) < cutoff:
-                m.sizeA += 1
-                m.sizeB += 1
-                m.extendedForwards += 1
-                extended = True
-        if extended:
-            self.extend_matches()
-        return self.healed_matches
-
-    def match(self):
-        infos = []
-        for m in self.extended_matches:
-            lengthA = m.sizeA + self.ngramSize - 1
-            txt = self.getTokensText(self.textA, m.a, lengthA)
-            if txt:
-                infos.append({
-                    'source': self.textB.label,
-                    'similarity': self.similarity_score,
-                    'matched_text': txt[:200] + '...' if len(txt) > 200 else txt
-                })
-        return self.numMatches, infos, self.similarity_score
-
-# ---------------------------------------------
-# AI Detector (mock)
-# ---------------------------------------------
-class AIDetector:
-    def analyze_text(self, text):
-        wc = len(text.split())
-        base = random.uniform(5.0, 35.0)
-        if wc > 1000:
-            base *= 0.8
-        elif wc < 200:
-            base *= 1.2
-        ai = min(95.0, max(0.0, base))
-        interp = (
-            'Low AI probability' if ai < 15 else
-            'Moderate AI probability' if ai < 35 else
-            'High AI probability' if ai < 60 else
-            'Very high AI probability'
-        )
-        conf = random.uniform(0.8, 0.95) if ai < 20 or ai > 70 else random.uniform(0.6, 0.85)
-        return {
-            'ai_percentage': round(ai, 1),
-            'interpretation': interp,
-            'chunks_analyzed': max(1, wc // 50),
-            'confidence': round(conf, 2)
-        }
-
-# ---------------------------------------------
-# Main API
-# ---------------------------------------------
-class PlagiarismAPI:
-    def __init__(self):
-        self.ai_detector = AIDetector()
-        self.pdf_processor = PDFProcessor()
-        self.ensure_nltk()
-
-    def ensure_nltk(self):
-        try:
-            nltk.data.find('tokenizers/punkt')
-        except LookupError:
-            nltk.download('punkt')
-        try:
-            nltk.data.find('corpora/stopwords')
-        except LookupError:
-            nltk.download('stopwords')
-
-    def download_and_process_file(self, url):
-        try:
-            resp = requests.get(url, timeout=60)
-            resp.raise_for_status()
-            temp_dir = tempfile.mkdtemp()
-            filename = None
-            if 'content-disposition' in resp.headers:
-                cd = resp.headers['content-disposition']
-                mm = re.findall('filename=(.+)', cd)
-                if mm:
-                    filename = mm[0].strip('"')
-            if not filename:
-                filename = os.path.basename(urlparse(url).path) or 'document'
-            ctype = resp.headers.get('content-type', '').lower()
-            if not os.path.splitext(filename)[1]:
-                if 'pdf' in ctype:
-                    filename += '.pdf'
-                elif 'word' in ctype or 'docx' in ctype:
-                    filename += '.docx'
-                elif 'powerpoint' in ctype or 'pptx' in ctype:
-                    filename += '.pptx'
-                else:
-                    filename += '.txt'
-            temp_path = os.path.join(temp_dir, secure_filename(filename))
-            logger.info(f"Downloading: {url}")
-            with open(temp_path, 'wb') as f:
-                f.write(resp.content)
-            t0 = time.time()
-            text = self.pdf_processor.process_file_content(temp_path, ctype)
-            logger.info(f"Extraction OK in {time.time()-t0:.2f}s, len={len(text)}")
-            try:
-                os.unlink(temp_path)
-                os.rmdir(temp_dir)
-            except Exception:
-                pass
-            return text, filename
-        except Exception as e:
-            logger.error(f"download_and_process_file error: {e}")
-            raise
-
-    def save_text_to_corpus(self, text, original_filename, student_id, assignment_id):
-        base = os.path.splitext(original_filename or 'document')[0]
-        base = re.sub(r'[^A-Za-z0-9._-]+', '_', base)[:80]
-        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        checksum = hashlib.md5(text.encode('utf-8', errors='ignore')).hexdigest()[:8]
-        sid = re.sub(r'[^A-Za-z0-9_-]+', '_', str(student_id))
-        aid = re.sub(r'[^A-Za-z0-9_-]+', '_', str(assignment_id))
-        fname = f"{base}__{sid}__{aid}__{ts}__{checksum}.txt"
-        path = os.path.join(CORPUS_DIR, fname)
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(text)
-        logger.info(f"Saved text to corpus: {path}")
-        return path
-
-    def _read_text_file(self, path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return f.read()
-        except Exception:
-            with open(path, 'r', encoding='latin-1', errors='replace') as f:
-                return f.read()
-
-    def list_corpus_texts(self, exclude_path=None):
-        files = []
-        for name in os.listdir(CORPUS_DIR):
-            if name.lower().endswith('.txt'):
-                full = os.path.join(CORPUS_DIR, name)
-                if exclude_path and os.path.abspath(full) == os.path.abspath(exclude_path):
-                    continue
-                files.append(full)
-        return files
-
-    def analyze_similarity(self, text, current_txt_path, label):
-        logger.info("Folder-based similarity analysis start")
-        corpus_files = self.list_corpus_texts(exclude_path=current_txt_path)
-        logger.info(f"Corpus files (excluding current): {len(corpus_files)}")
-        main = Text(text, label, "")
-        detailed = []
-        max_sim = 0.0
-        total = 0
-        for path in corpus_files:
-            try:
-                src = self._read_text_file(path)
-                src_label = os.path.basename(path)
-                src_text = Text(src, src_label, path)
-                matcher = Matcher(main, src_text,
-                                  threshold=THRESHOLD,
-                                  cutoff=CUTOFF,
-                                  ngramSize=NGRAM,
-                                  removeStopwords=True,
-                                  minDistance=MIN_DISTANCE,
-                                  silent=True)
-                n, infos, sim = matcher.match()
-                logger.debug(f"Compared with {src_label}: matches={n}, sim={sim}")
-                if sim > 0:
-                    detailed.extend(infos)
-                    max_sim = max(max_sim, sim)
-                total += 1
-            except Exception as e:
-                logger.error(f"Compare error {path}: {e}")
-                continue
-        return {
-            'similarity_score': round(max_sim, 1),
-            'total_comparisons': total,
-            'detailed_results': detailed[:10]
-        }
-
-    def calculate_plagiarism_score(self, similarity, ai):
-        p = similarity * 0.6 + ai * 0.4
-        level = 'low' if p < 15 else 'moderate' if p < 35 else 'high' if p < 60 else 'critical'
-        factors = []
-        if similarity > 25:
-            factors.append('high_similarity_matches')
-        if ai > 25:
-            factors.append('ai_generated_content')
-        if similarity > 15 and ai > 15:
-            factors.append('multiple_detection_methods')
-        if not factors:
-            factors.append('low_risk_indicators')
-        return {
-            'plagiarism_score': round(p, 1),
-            'risk_level': level,
-            'contributing_factors': factors
-        }
-
-    def generate_html_report(self, student, sim, ai, plag, content):
-        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        def cls(score):
-            return 'low-risk' if score < 15 else 'medium-risk' if score < 35 else 'high-risk' if score < 60 else 'critical-risk'
-        return f"""<!DOCTYPE html>
-<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
-<title>Plagiarism Analysis Report - {student['student_name']}</title>
-<style>
-body{{font-family:'Segoe UI',Tahoma,Verdana,sans-serif;margin:0;padding:20px;background:#f8f9fa;color:#333;line-height:1.6}}
-.container{{max-width:1200px;margin:0 auto;background:#fff;border-radius:10px;box-shadow:0 4px 6px rgba(0,0,0,.1);overflow:hidden}}
-.header{{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:30px;text-align:center}}
-.header h1{{margin:0;font-size:28px;font-weight:300}}
-.content{{padding:30px}}
-.info-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px;margin-bottom:30px}}
-.info-card{{background:#f8f9fa;padding:20px;border-radius:8px;border-left:4px solid #667eea}}
-.info-card h3{{margin:0 0 10px;color:#667eea;font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:1px}}
-.info-card p{{margin:0;font-size:16px;font-weight:500}}
-.scores-section{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:30px;margin:30px 0}}
-.score-card{{background:#fff;border-radius:10px;padding:25px;box-shadow:0 2px 10px rgba(0,0,0,.1);border-top:4px solid}}
-.score-card.similarity{{border-top-color:#3498db}}
-.score-card.ai-detection{{border-top-color:#e74c3c}}
-.score-card.plagiarism{{border-top-color:#f39c12}}
-.score-card h3{{margin:0 0 15px;font-size:18px;font-weight:600}}
-.score-display{{font-size:36px;font-weight:700;margin:10px 0}}
-.low-risk{{color:#27ae60}}.medium-risk{{color:#f39c12}}.high-risk{{color:#e74c3c}}.critical-risk{{color:#c0392b}}
-.details-card{{background:#f8f9fa;border-radius:8px;padding:20px;margin-bottom:20px}}
-.matches-list{{list-style:none;padding:0}}
-.matches-list li{{background:#fff;padding:15px;margin-bottom:10px;border-radius:5px;border-left:3px solid #3498db}}
-.risk-factors{{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}}
-.risk-factor{{background:#e74c3c;color:#fff;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:500}}
-.footer{{background:#2c3e50;color:#fff;text-align:center;padding:20px;font-size:12px}}
-.interpretation{{font-style:italic;color:#666;margin-top:5px}}
-.processing-info{{background:#e8f5e8;border:1px solid #c3e6c3;border-radius:5px;padding:15px;margin-bottom:20px}}
-</style></head>
-<body><div class='container'><div class='header'><h1>Plagiarism Analysis Report</h1><p>Comprehensive academic integrity assessment with PDF/OCR processing</p></div>
-<div class='content'>
-<div class='processing-info'><h4>Document Processing Information</h4><p>This document was automatically processed using advanced PDF extraction and OCR technology. Text content includes both direct text extraction and OCR results from images within the document.</p><p><strong>Content Length:</strong> {len(content)} characters | <strong>Word Count:</strong> {len(content.split())} words</p></div>
-<div class='info-grid'>
-<div class='info-card'><h3>Student</h3><p>{student['student_name']}</p></div>
-<div class='info-card'><h3>Classroom</h3><p>{student['classroom_name']}</p></div>
-<div class='info-card'><h3>Assignment ID</h3><p>{student['assignment_id']}</p></div>
-<div class='info-card'><h3>Analysis Date</h3><p>{ts}</p></div>
-</div>
-<div class='scores-section'>
-<div class='score-card similarity'><h3>Similarity Analysis</h3><div class='score-display {cls(sim['similarity_score'])}'>{sim['similarity_score']}%</div><p>Compared against {sim['total_comparisons']} documents</p></div>
-<div class='score-card ai-detection'><h3>AI Detection</h3><div class='score-display {cls(ai['ai_percentage'])}'>{ai['ai_percentage']}%</div><p class='interpretation'>{ai['interpretation']}</p><p>Confidence: {ai['confidence']}</p></div>
-<div class='score-card plagiarism'><h3>Overall Plagiarism Score</h3><div class='score-display {cls(plag['plagiarism_score'])}'>{plag['plagiarism_score']}%</div><p>Risk Level: <strong>{plag['risk_level'].upper()}</strong></p><div class='risk-factors'>{' '.join([f"<span class='risk-factor'>{f.replace('_',' ').title()}</span>" for f in plag['contributing_factors']])}</div></div>
-</div>
-<div class='analysis-details'>
-{('''<div class=\"details-card\"><h4>Similarity Matches Found</h4><ul class=\"matches-list\">''' + ''.join([f"<li><strong>{m['source']}</strong><br>Similarity: {m['similarity']}%<br><em>{m['matched_text']}</em></li>" for m in sim['detailed_results'][:5]]) + '</ul></div>') if sim['detailed_results'] else '<div class=\"details-card\"><h4>No Significant Similarity Matches Found</h4><p>The document appears to have original content with no substantial matches in our database.</p></div>'}
-<div class='details-card'><h4>AI Detection Analysis</h4><p>Analyzed {ai['chunks_analyzed']} text segments with {ai['confidence']} confidence level.</p><p><strong>Interpretation:</strong> {ai['interpretation']}</p></div>
-</div>
-</div>
-<div class='footer'><p>Generated by Enhanced Academic Integrity Analysis System with PDF/OCR Processing | {ts}</p><p>This report is confidential and intended solely for academic evaluation purposes.</p></div>
-</div></body></html>"""
-
-    def log_user_score(self, student_id, scores):
-        global user_scores_log
-        user_scores_log.setdefault(student_id, []).append({
-            'timestamp': datetime.now().isoformat(),
-            'scores': scores
-        })
-        user_scores_log[student_id] = user_scores_log[student_id][-10:]
-
-    def analyze_document(self, payload):
-        try:
-            logger.info(f"Analyze: student_id={payload.get('student_id')} assignment_id={payload.get('assignment_id')} url={payload.get('file_url')}")
-            t0 = time.time()
-            content, filename = self.download_and_process_file(payload['file_url'])
-            logger.info(f"Downloaded+extracted in {time.time()-t0:.2f}s | filename={filename}")
-            if not content or len(content.strip()) < 10:
-                raise ValueError('Could not extract meaningful content from the document')
-            saved_txt_path = self.save_text_to_corpus(content, filename, payload.get('student_id'), payload.get('assignment_id'))
-            sim = self.analyze_similarity(content, saved_txt_path, filename or payload['student_name'])
-            ai = self.ai_detector.analyze_text(content)
-            plag = self.calculate_plagiarism_score(sim['similarity_score'], ai['ai_percentage'])
-            report_html = self.generate_html_report(payload, sim, ai, plag, content)
-            scores = {
-                'similarity_score': sim['similarity_score'],
-                'ai_percentage': ai['ai_percentage'],
-                'plagiarism_score': plag['plagiarism_score'],
-                'content_length': len(content),
-                'word_count': len(content.split())
-            }
-            self.log_user_score(payload['student_id'], scores)
-            logger.info(f"Done | sim={scores['similarity_score']} ai={scores['ai_percentage']} plag={scores['plagiarism_score']} | corpus={sim['total_comparisons']}")
-            return {
-                'status': 'completed',
-                'similarity_analysis': sim,
-                'ai_analysis': ai,
-                'plagiarism_analysis': plag,
-                'report_html': report_html,
-                'processing_info': {
-                    'filename': filename,
-                    'content_length': len(content),
-                    'word_count': len(content.split()),
-                    'saved_txt_path': saved_txt_path,
-                    'corpus_dir': CORPUS_DIR,
-                    'corpus_files_compared': sim['total_comparisons']
-                },
-                'errors': []
-            }
-        except Exception as e:
-            logger.error(f"analyze_document error: {e}")
-            return {
-                'status': 'failed',
-                'similarity_analysis': {'similarity_score': 0, 'total_comparisons': 0, 'detailed_results': []},
-                'ai_analysis': {'ai_percentage': 0, 'interpretation': 'Analysis failed', 'chunks_analyzed': 0, 'confidence': 0},
-                'plagiarism_analysis': {'plagiarism_score': 0, 'risk_level': 'unknown', 'contributing_factors': ['analysis_error']},
-                'report_html': f"<html><body><h1>Analysis Failed</h1><p>Error: {str(e)}</p></body></html>",
-                'processing_info': {'filename': 'unknown', 'content_length': 0, 'word_count': 0},
-                'errors': [str(e)]
-            }
-
-api = PlagiarismAPI()
-
-@app.route('/grade/analyze', methods=['POST'])
-def analyze_submission():
-    try:
-        if not request.is_json:
-            return jsonify({'error': 'Content-Type must be application/json'}), 400
-        payload = request.get_json()
-        for f in ['student_id', 'student_name', 'file_url', 'assignment_id', 'classroom_name']:
-            if f not in payload:
-                return jsonify({'error': f'Missing required field: {f}'}), 400
-        result = api.analyze_document(payload)
-        return jsonify(result)
-    except Exception as e:
-        logger.error(f"API error: {e}")
-        return jsonify({
-            'status': 'failed',
-            'similarity_analysis': {'similarity_score': 0, 'total_comparisons': 0, 'detailed_results': []},
-            'ai_analysis': {'ai_percentage': 0, 'interpretation': 'Analysis failed', 'chunks_analyzed': 0, 'confidence': 0},
-            'plagiarism_analysis': {'plagiarism_score': 0, 'risk_level': 'unknown', 'contributing_factors': ['api_error']},
-            'report_html': f"<html><body><h1>Analysis Failed</h1><p>API Error: {str(e)}</p></body></html>",
-            'processing_info': {'filename': 'unknown', 'content_length': 0, 'word_count': 0},
-            'errors': [str(e)]
-        }), 500
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
-        'service': 'Enhanced Plagiarism Detection API with PDF/OCR Processing',
-        'capabilities': [
-            'PDF text extraction',
-            'OCR for image-based documents',
-            'DOCX/PPTX processing',
-            'Image preprocessing',
-            'Multi-format support'
-        ]
-    })
-
-@app.route('/test-processing', methods=['POST'])
-def test_file_processing():
-    try:
-        if not request.is_json:
-            return jsonify({'error': 'Content-Type must be application/json'}), 400
-        payload = request.get_json()
-        if 'file_url' not in payload:
-            return jsonify({'error': 'Missing required field: file_url'}), 400
-        logger.info(f"Test-processing URL: {payload.get('file_url')}")
-        content, filename = api.download_and_process_file(payload['file_url'])
-        return jsonify({
-            'status': 'success',
-            'filename': filename,
-            'content_preview': content[:500] + '...' if len(content) > 500 else content,
-            'content_length': len(content),
-            'word_count': len(content.split())
-        })
-    except Exception as e:
-        logger.error(f"Test processing error: {e}")
-        return jsonify({'status': 'failed', 'error': str(e)}), 500
-
-@app.route('/user/<student_id>/scores', methods=['GET'])
-def get_user_scores(student_id):
-    if student_id in user_scores_log:
-        return jsonify({'student_id': student_id, 'scores_history': user_scores_log[student_id]})
-    else:
-        return jsonify({'student_id': student_id, 'scores_history': [], 'message': 'No scores found for this user'})
-
-@app.route('/stats', methods=['GET'])
-def get_stats():
-    total_users = len(user_scores_log)
-    total_analyses = sum(len(scores) for scores in user_scores_log.values())
-    try:
-        corpus_count = len([n for n in os.listdir(CORPUS_DIR) if n.lower().endswith('.txt')])
-    except Exception:
-        corpus_count = 0
-    return jsonify({
-        'total_users_analyzed': total_users,
-        'total_analyses_performed': total_analyses,
-        'corpus_text_files': corpus_count,
-        'system_status': 'operational',
-        'features': [
-            'PDF text extraction with PyMuPDF',
-            'OCR processing with Tesseract',
-            'Image preprocessing with OpenCV',
-            'DOCX/PPTX support',
-            'Multi-format document processing',
-            'Persistent text corpus and folder-based similarity'
-        ]
-    })
-
-if __name__ == '__main__':
-    os.makedirs(LOGS_DIR, exist_ok=True)
-    os.makedirs(CORPUS_DIR, exist_ok=True)
-    print('Starting Enhanced Plagiarism Detection API Service with PDF/OCR Processing...')
-    print('Server will run on http://localhost:5000')
-    print('\nFeatures enabled:')
-    print('✓ PDF text extraction with PyMuPDF')
-    print('✓ OCR processing with Tesseract')
-    print('✓ Image preprocessing with OpenCV/PIL')
-    print('✓ DOCX/PPTX document support')
-    print('✓ Multi-format file processing')
-    print('\nAvailable endpoints:')
-    print('POST /grade/analyze - Main plagiarism analysis endpoint')
-    print('POST /test-processing - Test file processing capabilities')
-    print('GET /health - Health check with capabilities')
-    print('GET /user/<student_id>/scores - Get user\'s score history')
-    print('GET /stats - Get system statistics')
-    try:
-        pytesseract.get_tesseract_version()
-        print(f"✓ Tesseract OCR ready: {pytesseract.get_tesseract_version()}")
-    except Exception as e:
-        print(f"⚠ Tesseract warning: {e}")
-        print('  OCR functionality may be limited')
-    app.run(host='0.0.0.0', port=5000, debug=True)
 import mimetypes
 from werkzeug.utils import secure_filename
 
@@ -849,111 +32,121 @@ from docx import Document
 from pptx import Presentation
 import csv
 
+# =====================================================================
+# CONFIGURABLE PARAMETERS - Easily adjust these values
+# =====================================================================
+THRESHOLD = 3     # Minimum match size for initial matching
+CUTOFF = 5        # Minimum match size after extending
+NGRAM = 3         # N-gram size for tokenization
+DISTANCE = 8      # Minimum distance between matches for healing
+
+# File directories - where to store downloaded and processed files
+DOWNLOAD_DIR = "downloads"    # Downloaded files
+TEXT_DIR = "extracted_text"   # Extracted text files
+REPORTS_DIR = "reports"       # Similarity reports
+LOGS_DIR = "logs"             # Log files
+
+# Create necessary directories
+for directory in [DOWNLOAD_DIR, TEXT_DIR, REPORTS_DIR, LOGS_DIR]:
+    os.makedirs(directory, exist_ok=True)
+
 # Initialize Flask app
 app = Flask(__name__)
 
-# -------------------------------------------------------------
-# Global configuration (easy to tweak)
-# -------------------------------------------------------------
-THRESHOLD = 3       # --threshold
-CUTOFF = 5          # --cutoff
-NGRAM = 3           # --ngram
-MIN_DISTANCE = 8    # --distance
-CORPUS_DIR = os.path.join(os.path.dirname(__file__), 'corpus')
-LOGS_DIR = os.path.join(os.path.dirname(__file__), 'logs')
-LOG_FILE = os.path.join(LOGS_DIR, 'api.log')
-
-# Ensure base folders exist
-os.makedirs(CORPUS_DIR, exist_ok=True)
-os.makedirs(LOGS_DIR, exist_ok=True)
-
-# Configure logging (console + rotating file)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger('plagiarism_api')
-logger.setLevel(logging.DEBUG)
-if not logger.handlers:
-    file_handler = RotatingFileHandler(LOG_FILE, maxBytes=2_000_000, backupCount=5, encoding='utf-8')
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s'))
-    logger.addHandler(file_handler)
-    # Mirror to console as well
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    logger.addHandler(console_handler)
+# Configure logging
+log_file = os.path.join(LOGS_DIR, f"plagiarism_detection_{datetime.now().strftime('%Y%m%d')}.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()
+    ]
+)
 
 # Global storage for user scores
-            try:
-                nltk.data.find('tokenizers/punkt')
-            except LookupError:
-                nltk.download('punkt')
-            try:
-                nltk.data.find('corpora/stopwords')
-            except LookupError:
-                nltk.download('stopwords')
+user_scores_log = {}
 
-        def download_and_process_file(self, url):
-            """Download file from URL and extract text content"""
-            try:
-                response = requests.get(url, timeout=60)
-                response.raise_for_status()
+# Configure Tesseract path based on OS
+import platform
+if platform.system() == "Windows":
+    pytesseract.pytesseract.tesseract_cmd = r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
 
-                # Create temporary file
-                temp_dir = tempfile.mkdtemp()
-
-                # Determine filename from URL or Content-Disposition header
-                filename = None
-                if 'content-disposition' in response.headers:
-                    cd = response.headers['content-disposition']
-                    filename_match = re.findall('filename=(.+)', cd)
-                    if filename_match:
-                        filename = filename_match[0].strip('"')
-
-                if not filename:
-                    filename = os.path.basename(urlparse(url).path) or "document"
-
-                # Ensure filename has proper extension based on content type
-                content_type = response.headers.get('content-type', '').lower()
-                if not os.path.splitext(filename)[1]:
-                    if 'pdf' in content_type:
-                        filename += '.pdf'
-                    elif 'word' in content_type or 'docx' in content_type:
-                        filename += '.docx'
-                    elif 'powerpoint' in content_type or 'pptx' in content_type:
-                        filename += '.pptx'
-                    else:
-                        filename += '.txt'
-
-                temp_path = os.path.join(temp_dir, secure_filename(filename))
-
-                logger.info(f"Downloading file from URL: {url}")
-                logger.debug(f"Response headers: {dict(response.headers)}")
-                # Save file content
-                with open(temp_path, 'wb') as f:
-                    f.write(response.content)
-                logger.info(f"Saved download to temp path: {temp_path}")
-
-                # Extract text using PDF processor
-                start_extract = time.time()
-                extracted_text = self.pdf_processor.process_file_content(temp_path, content_type)
-                elapsed_extract = time.time() - start_extract
-                logger.info(f"Extraction complete in {elapsed_extract:.2f}s, extracted length={len(extracted_text)} chars")
-
-                # Clean up temporary files
-                try:
-                    os.unlink(temp_path)
-                    os.rmdir(temp_dir)
-                except Exception:
-                    pass
-
-                return extracted_text, filename
-
-            except Exception as e:
-                logger.error(f"Error downloading and processing file from {url}: {e}")
-                raise
+class PDFProcessor:
+    """Enhanced PDF processing with OCR capabilities"""
+    
+    def __init__(self):
+        print("Initializing PDF processor...")
+        self.check_tesseract_installation()
+    
+    def check_tesseract_installation(self):
+        """Verify that Tesseract is properly installed and configured."""
+        try:
+            pytesseract.get_tesseract_version()
+            logging.info(f"Tesseract version: {pytesseract.get_tesseract_version()}")
+            print(f"✓ Tesseract OCR ready: {pytesseract.get_tesseract_version()}")
+            return True
+        except Exception as e:
+            logging.warning(f"Tesseract not properly configured: {e}")
+            logging.warning("OCR functionality may be limited")
+            print(f"⚠ Tesseract warning: {e}")
+            print("  OCR functionality may be limited")
+            return False
+    
+    def preprocess_image(self, image, quality_factor=1.5):
+        """
+        Preprocess images for better OCR results with multiple enhancement techniques.
+        Returns both the enhanced color image and the binary version for OCR.
+        """
+        try:
+            print("Preprocessing image for OCR...")
+            # Create a copy to avoid modifying the original
+            enhanced = image.copy()
+            
+            # Enhance contrast 
+            enhancer = ImageEnhance.Contrast(enhanced)
+            enhanced = enhancer.enhance(quality_factor)
+            
+            # Enhance sharpness
+            enhancer = ImageEnhance.Sharpness(enhanced)
+            enhanced = enhancer.enhance(quality_factor)
+            
+            # Convert to numpy array for OpenCV processing
+            image_array = np.array(enhanced)
+            
+            # If grayscale, convert to RGB first
+            if len(image_array.shape) == 2:
+                image_array = cv2.cvtColor(image_array, cv2.COLOR_GRAY2RGB)
+                
+            # Convert to grayscale for binary processing
+            gray = cv2.cvtColor(image_array, cv2.COLOR_RGB2GRAY)
+            
+            # Apply multiple noise reduction techniques
+            blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+            
+            # Enhance text using morphological operations
+            kernel = np.ones((1, 1), np.uint8)
+            morph = cv2.morphologyEx(blurred, cv2.MORPH_CLOSE, kernel)
+            
+            # Apply adaptive thresholding - works better than Otsu for documents
+            binary = cv2.adaptiveThreshold(
+                morph, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                cv2.THRESH_BINARY, 11, 2
+            )
+            
+            # Apply dilation to fill in broken text
+            kernel = np.ones((1, 1), np.uint8)
+            binary = cv2.dilate(binary, kernel, iterations=1)
+            
+            # Create a binary PIL image for OCR
+            binary_pil = Image.fromarray(binary)
+            
+            print("Image preprocessing complete.")
+            return enhanced, binary_pil
         
         except Exception as e:
-            logger.error(f"Error preprocessing image: {e}")
+            logging.error(f"Error preprocessing image: {e}")
+            print(f"Error preprocessing image: {e}")
             # If preprocessing fails, return the original image
             return image, image
     
@@ -963,6 +156,7 @@ if not logger.handlers:
         Returns empty string if OCR fails.
         """
         try:
+            print("Performing OCR on image...")
             # Try to improve OCR with image preprocessing
             _, binary_image = self.preprocess_image(image)
             
@@ -985,9 +179,11 @@ if not logger.handlers:
             # Clean up text
             text = re.sub(r'\s+', ' ', text).strip()
             
+            print(f"OCR complete. Extracted {len(text)} characters.")
             return text
         except Exception as e:
-            logger.error(f"OCR error: {e}")
+            logging.error(f"OCR error: {e}")
+            print(f"OCR error: {e}")
             return ""
     
     def extract_text_from_pdf(self, file_path):
@@ -995,12 +191,14 @@ if not logger.handlers:
         Extract text and images from PDF using PyMuPDF with OCR for images.
         """
         try:
+            print(f"Extracting text from PDF: {os.path.basename(file_path)}")
             # Open PDF with PyMuPDF
             pdf_document = fitz.open(file_path)
             extracted_text = ""
             
             # Process each page
             for page_index in range(len(pdf_document)):
+                print(f"Processing page {page_index + 1} of {len(pdf_document)}...")
                 page = pdf_document.load_page(page_index)
                 
                 # Extract direct text first
@@ -1013,6 +211,7 @@ if not logger.handlers:
                 else:
                     # Page might be image-based, try OCR on the entire page
                     try:
+                        print(f"Page {page_index + 1} has limited text, trying OCR...")
                         # Render page as image
                         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better OCR
                         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
@@ -1026,12 +225,17 @@ if not logger.handlers:
                         
                     except Exception as e:
                         logging.error(f"Error processing page {page_index} with OCR: {e}")
+                        print(f"Error processing page {page_index} with OCR: {e}")
                 
                 # Extract images and perform OCR on them
                 image_list = page.get_images(full=True)
                 
+                if image_list:
+                    print(f"Found {len(image_list)} images on page {page_index + 1}.")
+                
                 for img_index, img_info in enumerate(image_list):
                     try:
+                        print(f"Processing image {img_index + 1} on page {page_index + 1}...")
                         xref = img_info[0]
                         base_image = fitz.Pixmap(pdf_document, xref)
                         
@@ -1045,6 +249,7 @@ if not logger.handlers:
                         
                         # Skip small images (likely icons or decorations)
                         if pil_img.width < 50 or pil_img.height < 50:
+                            print(f"Skipping small image: {pil_img.width}x{pil_img.height}")
                             continue
                         
                         # Extract text from image using OCR
@@ -1056,18 +261,22 @@ if not logger.handlers:
                         
                     except Exception as e:
                         logging.error(f"Error processing image {img_index} on page {page_index}: {e}")
+                        print(f"Error processing image {img_index} on page {page_index}: {e}")
                         continue
             
             pdf_document.close()
+            print(f"PDF extraction complete. Extracted {len(extracted_text)} characters.")
             return extracted_text.strip()
             
         except Exception as e:
-            logger.error(f"Error extracting from PDF {file_path}: {str(e)}\n{traceback.format_exc()}")
+            logging.error(f"Error extracting from PDF {file_path}: {str(e)}\n{traceback.format_exc()}")
+            print(f"Error extracting from PDF {file_path}: {str(e)}")
             return f"Error extracting content from PDF: {str(e)}"
     
     def extract_text_from_docx(self, file_path):
         """Extract text from DOCX files."""
         try:
+            print(f"Extracting text from DOCX: {os.path.basename(file_path)}")
             doc = Document(file_path)
             text_content = []
             
@@ -1086,15 +295,19 @@ if not logger.handlers:
                     if row_text:
                         text_content.append(" | ".join(row_text))
             
-            return "\n\n".join(text_content)
+            result = "\n\n".join(text_content)
+            print(f"DOCX extraction complete. Extracted {len(result)} characters.")
+            return result
             
         except Exception as e:
-            logger.error(f"Error extracting from DOCX {file_path}: {e}")
+            logging.error(f"Error extracting from DOCX {file_path}: {e}")
+            print(f"Error extracting from DOCX {file_path}: {e}")
             return f"Error extracting content from DOCX: {str(e)}"
     
     def extract_text_from_pptx(self, file_path):
         """Extract text from PPTX files."""
         try:
+            print(f"Extracting text from PPTX: {os.path.basename(file_path)}")
             prs = Presentation(file_path)
             text_content = []
             
@@ -1108,37 +321,47 @@ if not logger.handlers:
                 if len(slide_text) > 1:  # More than just the slide header
                     text_content.append("\n".join(slide_text))
             
-            return "\n\n".join(text_content)
+            result = "\n\n".join(text_content)
+            print(f"PPTX extraction complete. Extracted {len(result)} characters.")
+            return result
             
         except Exception as e:
-            logger.error(f"Error extracting from PPTX {file_path}: {e}")
+            logging.error(f"Error extracting from PPTX {file_path}: {e}")
+            print(f"Error extracting from PPTX {file_path}: {e}")
             return f"Error extracting content from PPTX: {str(e)}"
     
     def extract_text_from_txt(self, file_path):
         """Extract text from plain text files with encoding detection."""
         try:
+            print(f"Extracting text from TXT: {os.path.basename(file_path)}")
             # Try multiple encodings
             encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
             
             for encoding in encodings:
                 try:
                     with open(file_path, "r", encoding=encoding) as f:
-                        return f.read()
+                        content = f.read()
+                        print(f"TXT extraction complete. Extracted {len(content)} characters.")
+                        return content
                 except UnicodeDecodeError:
                     continue
             
             # If all encodings fail, try binary mode with error handling
             with open(file_path, "rb") as f:
                 binary = f.read()
-                return binary.decode('utf-8', errors='replace')
+                content = binary.decode('utf-8', errors='replace')
+                print(f"TXT extraction complete (using binary mode). Extracted {len(content)} characters.")
+                return content
                 
         except Exception as e:
-            logger.error(f"Error reading text file {file_path}: {e}")
+            logging.error(f"Error reading text file {file_path}: {e}")
+            print(f"Error reading text file {file_path}: {e}")
             return f"Error reading text file: {str(e)}"
     
     def extract_text_from_csv(self, file_path):
         """Extract text from CSV files."""
         try:
+            print(f"Extracting text from CSV: {os.path.basename(file_path)}")
             text_content = []
             encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
             
@@ -1155,7 +378,9 @@ if not logger.handlers:
                                 break
                             text_content.append(" ".join(row))
                     
-                    return "\n".join(text_content)
+                    result = "\n".join(text_content)
+                    print(f"CSV extraction complete. Extracted {len(result)} characters.")
+                    return result
                     
                 except UnicodeDecodeError:
                     continue
@@ -1163,18 +388,23 @@ if not logger.handlers:
             return "Error: Could not decode CSV file"
             
         except Exception as e:
-            logger.error(f"Error reading CSV file {file_path}: {e}")
+            logging.error(f"Error reading CSV file {file_path}: {e}")
+            print(f"Error reading CSV file {file_path}: {e}")
             return f"Error reading CSV file: {str(e)}"
     
     def extract_text_from_image(self, file_path):
         """Extract text from image files using OCR."""
         try:
+            print(f"Extracting text from image: {os.path.basename(file_path)}")
             img = Image.open(file_path)
             ocr_text = self.perform_ocr(img)
-            return ocr_text if ocr_text.strip() else "No text detected in image"
+            result = ocr_text if ocr_text.strip() else "No text detected in image"
+            print(f"Image OCR complete. Extracted {len(result)} characters.")
+            return result
             
         except Exception as e:
-            logger.error(f"Error processing image file {file_path}: {e}")
+            logging.error(f"Error processing image file {file_path}: {e}")
+            print(f"Error processing image file {file_path}: {e}")
             return f"Error processing image file: {str(e)}"
     
     def process_file_content(self, file_path, content_type=None):
@@ -1182,6 +412,7 @@ if not logger.handlers:
         Process a file and extract text content based on file type.
         """
         try:
+            print(f"Processing file: {os.path.basename(file_path)}")
             # Determine file type from extension if content_type not provided
             if not content_type:
                 _, ext = os.path.splitext(file_path)
@@ -1193,6 +424,8 @@ if not logger.handlers:
                 else:
                     _, ext = os.path.splitext(file_path)
                     ext = ext.lower().lstrip('.')
+            
+            print(f"Detected file type: {ext}")
             
             # Route to appropriate extraction method
             if ext == 'pdf':
@@ -1210,15 +443,18 @@ if not logger.handlers:
             else:
                 # Try to read as text file for unknown types
                 logging.warning(f"Unknown file type: {ext}. Attempting text extraction.")
+                print(f"Unknown file type: {ext}. Attempting text extraction.")
                 return self.extract_text_from_txt(file_path)
                 
         except Exception as e:
-            logger.error(f"Error processing file {file_path}: {e}")
+            logging.error(f"Error processing file {file_path}: {e}")
+            print(f"Error processing file {file_path}: {e}")
             return f"Error processing file: {str(e)}"
 
 
 class Text:
     def __init__(self, raw_text, label, filepath, removeStopwords=True):
+        print(f"Creating Text object for: {label}")
         if isinstance(raw_text, list):
             self.text = ' \n '.join(raw_text)
         else:
@@ -1227,8 +463,9 @@ class Text:
         self.filepath = filepath
         self.preprocess(self.text)
         self.tokens = self.getTokens(removeStopwords)
-        self.trigrams = self.ngrams(3)
+        self.trigrams = self.ngrams(NGRAM)  # Using configurable NGRAM value
         self.checksum = self.calculate_checksum()
+        print(f"Text object created: {len(self.tokens)} tokens, {len(self.trigrams)} {NGRAM}-grams")
 
     def calculate_checksum(self):
         """Calculate a checksum for the file content to detect changes"""
@@ -1290,7 +527,8 @@ class ExtendedMatch:
 
 
 class Matcher:
-    def __init__(self, textObjA, textObjB, threshold=3, cutoff=5, ngramSize=3, removeStopwords=True, minDistance=8, silent=True):
+    def __init__(self, textObjA, textObjB, threshold=THRESHOLD, cutoff=CUTOFF, ngramSize=NGRAM, removeStopwords=True, minDistance=DISTANCE, silent=True):
+        print(f"Comparing: {textObjA.label} with {textObjB.label}")
         self.threshold = threshold
         self.ngramSize = ngramSize
         self.minDistance = minDistance
@@ -1307,13 +545,19 @@ class Matcher:
         self.match_texts = []
 
         self.initial_matches = self.get_initial_matches()
+        print(f"Found {len(self.initial_matches)} initial matches above threshold {threshold}")
+        
         self.healed_matches = self.heal_neighboring_matches()
+        print(f"After healing: {len(self.healed_matches)} match groups")
+        
         self.extended_matches = self.extend_matches()
         self.extended_matches = [match for match in self.extended_matches
                                 if min(match.sizeA, match.sizeB) >= cutoff]
+        print(f"After extending and applying cutoff {cutoff}: {len(self.extended_matches)} significant matches")
 
         self.numMatches = len(self.extended_matches)
         self.similarity_score = self.calculate_similarity()
+        print(f"Similarity score: {self.similarity_score}%")
 
     def calculate_similarity(self):
         if not self.extended_matches:
@@ -1470,6 +714,7 @@ class AIDetector:
     
     def analyze_text(self, text):
         """Analyze text for AI-generated content"""
+        print("Analyzing text for AI-generated content signatures...")
         # Mock analysis - in reality, this would use AI detection models
         word_count = len(text.split())
         
@@ -1502,7 +747,8 @@ class AIDetector:
             confidence = random.uniform(0.8, 0.95)
         else:
             confidence = random.uniform(0.6, 0.85)
-            
+        
+        print(f"AI analysis complete: {ai_percentage}% probability, {interpretation}")    
         return {
             "ai_percentage": round(ai_percentage, 1),
             "interpretation": interpretation,
@@ -1513,31 +759,52 @@ class AIDetector:
 
 class PlagiarismAPI:
     def __init__(self):
+        print("Initializing Plagiarism Detection API...")
         self.ai_detector = AIDetector()
         self.pdf_processor = PDFProcessor()
         self.ensure_nltk_data()
         
     def ensure_nltk_data(self):
         """Download required NLTK data"""
-    try:
+        try:
             nltk.data.find('tokenizers/punkt')
         except LookupError:
+            print("Downloading NLTK punkt tokenizers...")
             nltk.download('punkt')
         try:
             nltk.data.find('corpora/stopwords')
         except LookupError:
+            print("Downloading NLTK stopwords...")
             nltk.download('stopwords')
-    try:
+    
     def download_and_process_file(self, url):
-        """Download file from URL and extract text content"""
+        """Download file from URL and extract text content, saving both original and text files"""
         try:
+            print(f"Downloading file from: {url}")
             response = requests.get(url, timeout=60)
             response.raise_for_status()
             
-            # Create temporary file
-            temp_dir = tempfile.mkdtemp()
+            # Create unique download ID
+            download_id = hashlib.md5(url.encode()).hexdigest()[:10]
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            download_folder = os.path.join(DOWNLOAD_DIR, f"{download_id}_{timestamp}")
+            os.makedirs(download_folder, exist_ok=True)
             
-        cd = response.headers['content-disposition']
+            # Log download details
+            download_log = {
+                "url": url,
+                "download_id": download_id,
+                "timestamp": timestamp,
+                "download_folder": download_folder,
+                "response_status": response.status_code,
+                "content_type": response.headers.get('content-type', 'unknown'),
+                "content_length": len(response.content)
+            }
+            
+            logging.info(f"Download details: {json.dumps(download_log)}")
+            print(f"Downloaded {download_log['content_length']} bytes of type {download_log['content_type']}")
+            
+            # Determine filename from URL or Content-Disposition header
             filename = None
             if 'content-disposition' in response.headers:
                 import re
@@ -1561,122 +828,172 @@ class PlagiarismAPI:
                 else:
                     filename += '.txt'
             
-            temp_path = os.path.join(temp_dir, secure_filename(filename))
+            # Secure filename
+            safe_filename = secure_filename(filename)
+            original_file_path = os.path.join(download_folder, safe_filename)
             
-            logger.info(f"Downloading file from URL: {url}")
-            logger.debug(f"Response headers: {dict(response.headers)}")
-            # Save file content
-            with open(temp_path, 'wb') as f:
+            # Save original file
+            with open(original_file_path, 'wb') as f:
                 f.write(response.content)
-            logger.info(f"Saved download to temp path: {temp_path}")
-
+                
+            print(f"Original file saved to: {original_file_path}")
+                
             # Extract text using PDF processor
-            start_extract = time.time()
-            extracted_text = self.pdf_processor.process_file_content(temp_path, content_type)
-            elapsed_extract = time.time() - start_extract
-            logger.info(f"Extraction complete in {elapsed_extract:.2f}s, extracted length={len(extracted_text)} chars")
+            print(f"Extracting text from downloaded file: {safe_filename}")
+            extracted_text = self.pdf_processor.process_file_content(original_file_path, content_type)
             
-            # Clean up temporary files
-            try:
-                os.unlink(temp_path)
-                os.rmdir(temp_dir)
-            except:
-                pass
+            # Save extracted text to a .txt file
+            text_filename = os.path.splitext(safe_filename)[0] + '.txt'
+            text_file_path = os.path.join(TEXT_DIR, text_filename)
             
-            return extracted_text, filename
+            with open(text_file_path, 'w', encoding='utf-8') as f:
+                f.write(extracted_text)
+                
+            print(f"Extracted text saved to: {text_file_path}")
+                
+            # Update log with extraction details
+            extraction_log = {
+                "original_file": original_file_path,
+                "text_file": text_file_path,
+                "text_length": len(extracted_text),
+                "extraction_timestamp": datetime.now().isoformat()
+            }
+            
+            logging.info(f"Extraction details: {json.dumps(extraction_log)}")
+            
+            return extracted_text, filename, text_file_path
             
         except Exception as e:
-            logger.error(f"Error downloading and processing file from {url}: {e}")
+            logging.error(f"Error downloading and processing file from {url}: {e}\n{traceback.format_exc()}")
+            print(f"Error downloading and processing file from {url}: {e}")
             raise
     
-    def save_text_to_corpus(self, text_content, original_filename, student_id, assignment_id):
-        """Save extracted text to the persistent corpus directory as a .txt file and return its path"""
-        # Sanitize name
-        base_name = os.path.splitext(original_filename or 'document')[0]
-        base_name = re.sub(r'[^A-Za-z0-9._-]+', '_', base_name)[:80]
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        checksum = hashlib.md5(text_content.encode('utf-8', errors='ignore')).hexdigest()[:8]
-        student_id_safe = re.sub(r'[^A-Za-z0-9_-]+', '_', str(student_id))
-        assignment_id_safe = re.sub(r'[^A-Za-z0-9_-]+', '_', str(assignment_id))
-        filename = f"{base_name}__{student_id_safe}__{assignment_id_safe}__{timestamp}__{checksum}.txt"
-        txt_path = os.path.join(CORPUS_DIR, filename)
-
-        with open(txt_path, 'w', encoding='utf-8') as f:
-            f.write(text_content)
-
-        logger.info(f"Saved extracted text to corpus: {txt_path}")
-        return txt_path
-
-    def _read_text_file(self, path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return f.read()
-        except Exception:
-            # Fallback encodings
-            with open(path, 'r', encoding='latin-1', errors='replace') as f:
-                return f.read()
-
-    def list_corpus_texts(self, exclude_path=None):
-        """List all .txt files in the corpus directory, optionally excluding one path"""
-        files = []
-        for name in os.listdir(CORPUS_DIR):
-            if not name.lower().endswith('.txt'):
-                continue
-            full = os.path.join(CORPUS_DIR, name)
-            if exclude_path and os.path.abspath(full) == os.path.abspath(exclude_path):
-                continue
-            files.append(full)
-        return files
-
-    def analyze_similarity(self, text_content, current_txt_path, current_label):
-        """Analyze text similarity against all .txt files in the corpus directory (max across sources)."""
-        logger.info("Starting folder-based similarity analysis")
-        corpus_files = self.list_corpus_texts(exclude_path=current_txt_path)
-        logger.info(f"Corpus files found (excluding current): {len(corpus_files)}")
-
-        main_text = Text(text_content, current_label, "")
+    def find_text_files_in_folder(self, target_folder):
+        """Find all text files in the target folder for comparison"""
+        if not os.path.exists(target_folder):
+            return []
+            
+        text_files = []
+        for file in os.listdir(target_folder):
+            if file.lower().endswith('.txt'):
+                file_path = os.path.join(target_folder, file)
+                if os.path.isfile(file_path):
+                    text_files.append(file_path)
+                    
+        return text_files
+    
+    def analyze_similarity_with_folder(self, main_text_path, main_text_content, filename):
+        """Analyze text for similarity against all text files in the same folder"""
+        print(f"Performing folder-based similarity analysis for: {filename}")
+        
+        # Create Text object for main text
+        main_text = Text(main_text_content, filename, main_text_path)
+        
+        # Find other text files in the TEXT_DIR folder
+        comparison_files = self.find_text_files_in_folder(TEXT_DIR)
+        print(f"Found {len(comparison_files)} text files for comparison")
+        
+        # Remove the main text from comparison if it exists in the folder
+        if main_text_path in comparison_files:
+            comparison_files.remove(main_text_path)
+            
         detailed_results = []
         max_similarity = 0.0
+        max_similarity_source = ""
         total_comparisons = 0
-
-        for path in corpus_files:
+        all_comparisons = []
+        
+        # Create a report folder
+        report_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_folder = os.path.join(REPORTS_DIR, f"report_{report_timestamp}")
+        os.makedirs(report_folder, exist_ok=True)
+        
+        # Detailed comparison report
+        comparison_report = []
+        
+        # Compare with each file in the folder
+        for source_path in comparison_files:
             try:
-                source_content = self._read_text_file(path)
-                source_name = os.path.basename(path)
-                source_text = Text(source_content, source_name, path)
-                matcher = Matcher(
-                    main_text,
-                    source_text,
-                    threshold=THRESHOLD,
-                    cutoff=CUTOFF,
-                    ngramSize=NGRAM,
-                    removeStopwords=True,
-                    minDistance=MIN_DISTANCE,
-                    silent=True
-                )
+                source_name = os.path.basename(source_path)
+                print(f"Comparing with: {source_name}")
+                
+                # Read source content
+                with open(source_path, 'r', encoding='utf-8', errors='replace') as f:
+                    source_content = f.read()
+                
+                # Create Text object for source
+                source_text = Text(source_content, source_name, source_path)
+                
+                # Compare texts
+                matcher = Matcher(main_text, source_text, 
+                                 threshold=THRESHOLD, 
+                                 cutoff=CUTOFF, 
+                                 ngramSize=NGRAM, 
+                                 minDistance=DISTANCE, 
+                                 silent=True)
+                
                 num_matches, matches_info, similarity = matcher.match()
-                logger.debug(f"Compared with {source_name} -> matches={num_matches}, similarity={similarity}")
-
+                
+                # Add to comparison results
+                comparison = {
+                    "source": source_name,
+                    "source_path": source_path,
+                    "similarity": similarity,
+                    "num_matches": num_matches
+                }
+                all_comparisons.append(comparison)
+                
+                # Add detailed info if there's significant similarity
                 if similarity > 0:
-                    # Keep snippets from this source
-                    detailed_results.extend(matches_info)
-                    max_similarity = max(max_similarity, similarity)
-
+                    for match in matches_info:
+                        detailed_results.append(match)
+                    
+                    # Update max similarity if this is higher
+                    if similarity > max_similarity:
+                        max_similarity = similarity
+                        max_similarity_source = source_name
+                    
+                    # Add to report
+                    comparison_report.append({
+                        "source": source_name,
+                        "similarity": similarity,
+                        "matches": matches_info
+                    })
+                
                 total_comparisons += 1
-
+                
             except Exception as e:
-                logger.error(f"Error comparing with {path}: {e}")
+                logging.error(f"Error comparing with {source_path}: {e}\n{traceback.format_exc()}")
+                print(f"Error comparing with {source_path}: {e}")
                 continue
-
-        # Limit to top 10 detailed results to keep payload small
+        
+        # Save comparison report to JSON file
+        report_file = os.path.join(report_folder, "similarity_report.json")
+        with open(report_file, 'w', encoding='utf-8') as f:
+            json.dump({
+                "filename": filename,
+                "timestamp": datetime.now().isoformat(),
+                "max_similarity": max_similarity,
+                "max_similarity_source": max_similarity_source,
+                "total_comparisons": total_comparisons,
+                "all_comparisons": all_comparisons,
+                "detailed_comparisons": comparison_report
+            }, f, indent=2)
+            
+        print(f"Similarity analysis complete. Max similarity: {max_similarity}% with {max_similarity_source}")
+        print(f"Detailed report saved to: {report_file}")
+        
         return {
             "similarity_score": round(max_similarity, 1),
+            "max_similarity_source": max_similarity_source,
             "total_comparisons": total_comparisons,
-            "detailed_results": detailed_results[:10]
+            "detailed_results": detailed_results[:10],  # Limit to top 10 results
+            "report_path": report_file
         }
     
     def calculate_plagiarism_score(self, similarity_score, ai_percentage):
         """Calculate overall plagiarism score"""
+        print("Calculating overall plagiarism score...")
         # Weight the scores (you can adjust these weights)
         similarity_weight = 0.6
         ai_weight = 0.4
@@ -1703,7 +1020,8 @@ class PlagiarismAPI:
             contributing_factors.append("multiple_detection_methods")
         if not contributing_factors:
             contributing_factors.append("low_risk_indicators")
-            
+        
+        print(f"Plagiarism score: {round(plagiarism_score, 1)}%, Risk level: {risk_level}")    
         return {
             "plagiarism_score": round(plagiarism_score, 1),
             "risk_level": risk_level,
@@ -1712,6 +1030,7 @@ class PlagiarismAPI:
     
     def generate_html_report(self, student_data, similarity_analysis, ai_analysis, plagiarism_analysis, content):
         """Generate comprehensive HTML report"""
+        print("Generating HTML report...")
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         # Determine color classes based on scores
@@ -1896,6 +1215,7 @@ class PlagiarismAPI:
                 Text content includes both direct text extraction and OCR results from images within the document.</p>
                 <p><strong>Content Length:</strong> {len(content)} characters | 
                 <strong>Word Count:</strong> {len(content.split())} words</p>
+                <p><strong>Files compared:</strong> {similarity_analysis['total_comparisons']} text files from the document corpus</p>
             </div>
             
             <div class="info-grid">
@@ -1924,6 +1244,7 @@ class PlagiarismAPI:
                         {similarity_analysis['similarity_score']}%
                     </div>
                     <p>Compared against {similarity_analysis['total_comparisons']} documents</p>
+                    {f'<p>Highest match with: {similarity_analysis["max_similarity_source"]}</p>' if similarity_analysis.get("max_similarity_source") else ''}
                 </div>
                 
                 <div class="score-card ai-detection">
@@ -1962,6 +1283,12 @@ class PlagiarismAPI:
                     <p>Analyzed {ai_analysis['chunks_analyzed']} text segments with {ai_analysis['confidence']} confidence level.</p>
                     <p><strong>Interpretation:</strong> {ai_analysis['interpretation']}</p>
                 </div>
+                
+                <div class="details-card">
+                    <h4>Processing Information</h4>
+                    <p>All extracted text content has been saved for future comparison. A detailed report has been generated.</p>
+                    <p>Similarity analysis parameters: Threshold={THRESHOLD}, Cutoff={CUTOFF}, N-gram Size={NGRAM}, Distance={DISTANCE}</p>
+                </div>
             </div>
         </div>
         
@@ -1973,11 +1300,17 @@ class PlagiarismAPI:
 </body>
 </html>"""
         
+        # Save the HTML report to a file
+        report_path = os.path.join(REPORTS_DIR, f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html")
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write(html_report)
+            
+        print(f"HTML report generated and saved to: {report_path}")
         return html_report
     
     def log_user_score(self, student_id, scores):
         """Log user scores for tracking"""
-    global user_scores_log
+        global user_scores_log
         
         if student_id not in user_scores_log:
             user_scores_log[student_id] = []
@@ -1989,30 +1322,26 @@ class PlagiarismAPI:
         
         # Keep only last 10 entries per user
         user_scores_log[student_id] = user_scores_log[student_id][-10:]
+        
+        print(f"User scores logged for student ID: {student_id}")
     
     def analyze_document(self, payload):
-        """Main analysis function with integrated PDF/OCR processing"""
+        """Main analysis function with integrated PDF/OCR processing and folder-based similarity"""
         try:
+            print(f"Starting analysis for document submitted by: {payload['student_name']}")
+            
             # Download and process file with enhanced PDF/OCR capabilities
-            logger.info(f"Analyze request: student_id={payload.get('student_id')} assignment_id={payload.get('assignment_id')} file_url={payload.get('file_url')}")
-            t0 = time.time()
-            content, filename = self.download_and_process_file(payload['file_url'])
-            logger.info(f"Downloaded and extracted in {(time.time()-t0):.2f}s | raw filename={filename}")
+            content, filename, text_file_path = self.download_and_process_file(payload['file_url'])
             
             # Validate that we got content
             if not content or len(content.strip()) < 10:
-                raise ValueError("Could not extract meaningful content from the document")
-
-            # Persist extracted text to corpus for future comparisons
-            saved_txt_path = self.save_text_to_corpus(
-                content,
-                original_filename=filename,
-                student_id=payload.get('student_id'),
-                assignment_id=payload.get('assignment_id')
-            )
+                error_msg = "Could not extract meaningful content from the document"
+                logging.error(error_msg)
+                print(error_msg)
+                raise ValueError(error_msg)
             
-            # Perform similarity analysis against corpus folder
-            similarity_analysis = self.analyze_similarity(content, saved_txt_path, filename or payload['student_name'])
+            # Perform folder-based similarity analysis
+            similarity_analysis = self.analyze_similarity_with_folder(text_file_path, content, payload['student_name'])
             
             # Perform AI detection analysis
             ai_analysis = self.ai_detector.analyze_text(content)
@@ -2034,10 +1363,12 @@ class PlagiarismAPI:
                 "ai_percentage": ai_analysis['ai_percentage'],
                 "plagiarism_score": plagiarism_analysis['plagiarism_score'],
                 "content_length": len(content),
-                "word_count": len(content.split())
+                "word_count": len(content.split()),
+                "text_file": text_file_path
             }
-        self.log_user_score(payload['student_id'], scores)
-        logger.info(f"Analysis completed | similarity={scores['similarity_score']} AI={scores['ai_percentage']} plagiarism={scores['plagiarism_score']} | corpus_count={similarity_analysis['total_comparisons']}")
+            self.log_user_score(payload['student_id'], scores)
+            
+            print(f"Analysis completed successfully for: {payload['student_name']}")
             
             return {
                 "status": "completed",
@@ -2046,18 +1377,17 @@ class PlagiarismAPI:
                 "plagiarism_analysis": plagiarism_analysis,
                 "report_html": html_report,
                 "processing_info": {
-            "filename": filename,
-            "content_length": len(content),
-            "word_count": len(content.split()),
-            "saved_txt_path": saved_txt_path,
-            "corpus_dir": CORPUS_DIR,
-            "corpus_files_compared": similarity_analysis['total_comparisons']
+                    "filename": filename,
+                    "content_length": len(content),
+                    "word_count": len(content.split()),
+                    "text_file": text_file_path
                 },
                 "errors": []
             }
             
         except Exception as e:
-        logger.error(f"Error in analysis: {e}")
+            logging.error(f"Error in analysis: {e}\n{traceback.format_exc()}")
+            print(f"Error in analysis: {e}")
             return {
                 "status": "failed",
                 "similarity_analysis": {"similarity_score": 0, "total_comparisons": 0, "detailed_results": []},
@@ -2076,8 +1406,10 @@ api = PlagiarismAPI()
 def analyze_submission():
     """Main API endpoint for plagiarism analysis with PDF/OCR processing"""
     try:
+        print("Received analyze submission request")
         # Validate request
         if not request.is_json:
+            print("Error: Content-Type must be application/json")
             return jsonify({"error": "Content-Type must be application/json"}), 400
             
         payload = request.get_json()
@@ -2086,15 +1418,17 @@ def analyze_submission():
         required_fields = ['student_id', 'student_name', 'file_url', 'assignment_id', 'classroom_name']
         for field in required_fields:
             if field not in payload:
+                print(f"Error: Missing required field: {field}")
                 return jsonify({"error": f"Missing required field: {field}"}), 400
         
         # Perform analysis with integrated PDF/OCR processing
-    result = api.analyze_document(payload)
+        result = api.analyze_document(payload)
         
         return jsonify(result)
         
     except Exception as e:
-    logger.error(f"API error: {e}")
+        logging.error(f"API error: {e}\n{traceback.format_exc()}")
+        print(f"API error: {e}")
         return jsonify({
             "status": "failed",
             "similarity_analysis": {"similarity_score": 0, "total_comparisons": 0, "detailed_results": []},
@@ -2109,6 +1443,7 @@ def analyze_submission():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
+    print("Health check requested")
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
@@ -2118,8 +1453,16 @@ def health_check():
             "OCR for image-based documents",
             "DOCX/PPTX processing",
             "Image preprocessing",
-            "Multi-format support"
-        ]
+            "Multi-format support",
+            "Folder-based similarity comparison",
+            "Extracted text preservation"
+        ],
+        "config": {
+            "threshold": THRESHOLD,
+            "cutoff": CUTOFF,
+            "ngram": NGRAM,
+            "distance": DISTANCE
+        }
     })
 
 
@@ -2127,28 +1470,34 @@ def health_check():
 def test_file_processing():
     """Test endpoint for file processing capabilities"""
     try:
+        print("Received test file processing request")
         if not request.is_json:
+            print("Error: Content-Type must be application/json")
             return jsonify({"error": "Content-Type must be application/json"}), 400
             
         payload = request.get_json()
         
         if 'file_url' not in payload:
+            print("Error: Missing required field: file_url")
             return jsonify({"error": "Missing required field: file_url"}), 400
         
-    # Test file processing
-    logger.info(f"Test-processing request for URL: {payload.get('file_url')}")
-    content, filename = api.download_and_process_file(payload['file_url'])
+        # Test file processing
+        content, filename, text_file_path = api.download_and_process_file(payload['file_url'])
+        
+        print(f"Test processing successful for: {filename}")
         
         return jsonify({
             "status": "success",
             "filename": filename,
             "content_preview": content[:500] + "..." if len(content) > 500 else content,
             "content_length": len(content),
-            "word_count": len(content.split())
+            "word_count": len(content.split()),
+            "text_file_path": text_file_path
         })
         
     except Exception as e:
-    logger.error(f"Test processing error: {e}")
+        logging.error(f"Test processing error: {e}\n{traceback.format_exc()}")
+        print(f"Test processing error: {e}")
         return jsonify({
             "status": "failed",
             "error": str(e)
@@ -2158,6 +1507,7 @@ def test_file_processing():
 @app.route('/user/<student_id>/scores', methods=['GET'])
 def get_user_scores(student_id):
     """Get historical scores for a user"""
+    print(f"Retrieving score history for student ID: {student_id}")
     global user_scores_log
     
     if student_id in user_scores_log:
@@ -2166,6 +1516,7 @@ def get_user_scores(student_id):
             "scores_history": user_scores_log[student_id]
         })
     else:
+        print(f"No score history found for student ID: {student_id}")
         return jsonify({
             "student_id": student_id,
             "scores_history": [],
@@ -2176,50 +1527,245 @@ def get_user_scores(student_id):
 @app.route('/stats', methods=['GET'])
 def get_stats():
     """Get system statistics"""
+    print("Retrieving system statistics")
     global user_scores_log
+    
+    # Count total files in each directory
+    download_count = len([f for f in os.listdir(DOWNLOAD_DIR) if os.path.isdir(os.path.join(DOWNLOAD_DIR, f))])
+    text_count = len([f for f in os.listdir(TEXT_DIR) if f.endswith('.txt')])
+    report_count = len([f for f in os.listdir(REPORTS_DIR) if f.endswith('.html') or f.endswith('.json')])
     
     total_users = len(user_scores_log)
     total_analyses = sum(len(scores) for scores in user_scores_log.values())
-    try:
-        corpus_count = len([n for n in os.listdir(CORPUS_DIR) if n.lower().endswith('.txt')])
-    except Exception:
-        corpus_count = 0
+    
+    print(f"Stats: {total_users} users, {total_analyses} analyses, {text_count} text files")
     
     return jsonify({
         "total_users_analyzed": total_users,
         "total_analyses_performed": total_analyses,
-        "corpus_text_files": corpus_count,
+        "stored_files": {
+            "downloads": download_count,
+            "extracted_texts": text_count,
+            "reports": report_count
+        },
         "system_status": "operational",
+        "configuration": {
+            "threshold": THRESHOLD,
+            "cutoff": CUTOFF,
+            "ngram_size": NGRAM,
+            "min_distance": DISTANCE
+        },
         "features": [
             "PDF text extraction with PyMuPDF",
             "OCR processing with Tesseract",
             "Image preprocessing with OpenCV",
             "DOCX/PPTX support",
             "Multi-format document processing",
-            "Persistent text corpus and folder-based similarity"
+            "Folder-based similarity comparison",
+            "Extracted text preservation for future analysis"
         ]
     })
 
 
+@app.route('/compare-texts', methods=['POST'])
+def compare_specific_texts():
+    """Compare two specific text files and generate a similarity report"""
+    try:
+        print("Received text comparison request")
+        if not request.is_json:
+            print("Error: Content-Type must be application/json")
+            return jsonify({"error": "Content-Type must be application/json"}), 400
+            
+        payload = request.get_json()
+        
+        # Validate required fields
+        if 'text1_path' not in payload or 'text2_path' not in payload:
+            print("Error: Missing required fields: text1_path and/or text2_path")
+            return jsonify({"error": "Missing required fields: text1_path and text2_path"}), 400
+        
+        text1_path = payload['text1_path']
+        text2_path = payload['text2_path']
+        
+        # Validate that files exist
+        if not os.path.exists(text1_path) or not os.path.exists(text2_path):
+            print("Error: One or both text files do not exist")
+            return jsonify({"error": "One or both text files do not exist"}), 400
+        
+        # Read file contents
+        try:
+            with open(text1_path, 'r', encoding='utf-8', errors='replace') as f:
+                text1_content = f.read()
+                
+            with open(text2_path, 'r', encoding='utf-8', errors='replace') as f:
+                text2_content = f.read()
+        except Exception as e:
+            print(f"Error reading text files: {e}")
+            return jsonify({"error": f"Error reading text files: {str(e)}"}), 500
+        
+        # Create Text objects
+        text1_name = os.path.basename(text1_path)
+        text2_name = os.path.basename(text2_path)
+        
+        text1_obj = Text(text1_content, text1_name, text1_path)
+        text2_obj = Text(text2_content, text2_name, text2_path)
+        
+        # Compare texts
+        matcher = Matcher(text1_obj, text2_obj, 
+                        threshold=THRESHOLD, 
+                        cutoff=CUTOFF, 
+                        ngramSize=NGRAM, 
+                        minDistance=DISTANCE, 
+                        silent=True)
+        
+        num_matches, matches_info, similarity = matcher.match()
+        
+        # Create comparison report
+        report = {
+            "file1": text1_name,
+            "file2": text2_name,
+            "similarity_score": similarity,
+            "num_matches": num_matches,
+            "matches": matches_info if len(matches_info) <= 10 else matches_info[:10],
+            "comparison_timestamp": datetime.now().isoformat(),
+            "parameters": {
+                "threshold": THRESHOLD,
+                "cutoff": CUTOFF,
+                "ngram": NGRAM,
+                "distance": DISTANCE
+            }
+        }
+        
+        print(f"Text comparison complete: {similarity}% similarity between {text1_name} and {text2_name}")
+        
+        # Save report to file
+        report_file = os.path.join(REPORTS_DIR, f"comparison_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+        with open(report_file, 'w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2)
+        
+        return jsonify({
+            "status": "success",
+            "similarity": similarity,
+            "num_matches": num_matches,
+            "file1": text1_name,
+            "file2": text2_name,
+            "report_file": report_file,
+            "matches_preview": matches_info[:3] if matches_info else []
+        })
+        
+    except Exception as e:
+        logging.error(f"Text comparison error: {e}\n{traceback.format_exc()}")
+        print(f"Text comparison error: {e}")
+        return jsonify({
+            "status": "failed",
+            "error": str(e)
+        }), 500
+
+
+@app.route('/cleanup-old-files', methods=['POST'])
+def cleanup_old_files():
+    """Remove old files to free up disk space"""
+    try:
+        print("Received cleanup request")
+        if not request.is_json:
+            print("Error: Content-Type must be application/json")
+            return jsonify({"error": "Content-Type must be application/json"}), 400
+            
+        payload = request.get_json()
+        
+        # Get days threshold from payload or use default (30 days)
+        days_threshold = payload.get('days_threshold', 30)
+        
+        # Calculate cutoff timestamp
+        cutoff_time = datetime.now().timestamp() - (days_threshold * 86400)  # 86400 seconds in a day
+        
+        removed_files = {
+            "downloads": 0,
+            "text_files": 0,
+            "reports": 0
+        }
+        
+        # Clean up download directory
+        print(f"Cleaning up files older than {days_threshold} days...")
+        for folder in os.listdir(DOWNLOAD_DIR):
+            folder_path = os.path.join(DOWNLOAD_DIR, folder)
+            if os.path.isdir(folder_path):
+                if os.path.getctime(folder_path) < cutoff_time:
+                    try:
+                        shutil.rmtree(folder_path)
+                        removed_files["downloads"] += 1
+                    except Exception as e:
+                        logging.error(f"Error removing folder {folder_path}: {e}")
+        
+        # Clean up text files
+        for file in os.listdir(TEXT_DIR):
+            file_path = os.path.join(TEXT_DIR, file)
+            if os.path.isfile(file_path) and os.path.getctime(file_path) < cutoff_time:
+                try:
+                    os.remove(file_path)
+                    removed_files["text_files"] += 1
+                except Exception as e:
+                    logging.error(f"Error removing text file {file_path}: {e}")
+        
+        # Clean up reports
+        for file in os.listdir(REPORTS_DIR):
+            file_path = os.path.join(REPORTS_DIR, file)
+            if os.path.isfile(file_path) and os.path.getctime(file_path) < cutoff_time:
+                try:
+                    os.remove(file_path)
+                    removed_files["reports"] += 1
+                except Exception as e:
+                    logging.error(f"Error removing report file {file_path}: {e}")
+        
+        print(f"Cleanup complete. Removed: {removed_files['downloads']} download folders, "
+              f"{removed_files['text_files']} text files, {removed_files['reports']} reports")
+              
+        return jsonify({
+            "status": "success",
+            "days_threshold": days_threshold,
+            "removed_files": removed_files,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logging.error(f"Cleanup error: {e}\n{traceback.format_exc()}")
+        print(f"Cleanup error: {e}")
+        return jsonify({
+            "status": "failed",
+            "error": str(e)
+        }), 500
+
+
 if __name__ == '__main__':
-    # Create logs & corpus directory
-    os.makedirs(LOGS_DIR, exist_ok=True)
-    os.makedirs(CORPUS_DIR, exist_ok=True)
+    # Ensure all required directories exist
+    for directory in [DOWNLOAD_DIR, TEXT_DIR, REPORTS_DIR, LOGS_DIR]:
+        os.makedirs(directory, exist_ok=True)
     
+    print("\n" + "="*80)
     print("Starting Enhanced Plagiarism Detection API Service with PDF/OCR Processing...")
-    print("Server will run on http://localhost:5000")
+    print("="*80)
+    print(f"Configuration: THRESHOLD={THRESHOLD}, CUTOFF={CUTOFF}, NGRAM={NGRAM}, DISTANCE={DISTANCE}")
+    print(f"Server will run on http://localhost:5000")
+    print("\nDirectories:")
+    print(f"✓ Downloads: {os.path.abspath(DOWNLOAD_DIR)}")
+    print(f"✓ Extracted Text: {os.path.abspath(TEXT_DIR)}")
+    print(f"✓ Reports: {os.path.abspath(REPORTS_DIR)}")
+    print(f"✓ Logs: {os.path.abspath(LOGS_DIR)}")
     print("\nFeatures enabled:")
     print("✓ PDF text extraction with PyMuPDF")
     print("✓ OCR processing with Tesseract")
     print("✓ Image preprocessing with OpenCV/PIL")
     print("✓ DOCX/PPTX document support")
     print("✓ Multi-format file processing")
+    print("✓ Folder-based similarity comparison")
+    print("✓ Text extraction preservation for future analysis")
     print("\nAvailable endpoints:")
     print("POST /grade/analyze - Main plagiarism analysis endpoint")
     print("POST /test-processing - Test file processing capabilities")
     print("GET /health - Health check with capabilities")
     print("GET /user/<student_id>/scores - Get user's score history")
     print("GET /stats - Get system statistics")
+    print("POST /compare-texts - Compare two specific text files")
+    print("POST /cleanup-old-files - Remove old files to free up disk space")
     
     # Test Tesseract installation on startup
     try:
@@ -2228,5 +1774,12 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"⚠ Tesseract warning: {e}")
         print("  OCR functionality may be limited")
+    
+    # Count existing files
+    text_count = len([f for f in os.listdir(TEXT_DIR) if f.endswith('.txt')])
+    if text_count > 0:
+        print(f"✓ Found {text_count} existing text files for comparison")
+    
+    print("="*80)
     
     app.run(host='0.0.0.0', port=5000, debug=True)

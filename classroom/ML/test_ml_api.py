@@ -5,7 +5,7 @@ import json
 payload = {
     "student_id": "64a1b2c3d4e5f6789012345a",
     "student_name": "John Doe",
-    "file_url": "http://localhost:4000/uploads/homeworks/ff.txt",
+    "file_url": "http://localhost:4000/uploads/homeworks/file5.pdf",
     "assignment_id": "64a1b2c3d4e5f6789012345b",
     "classroom_name": "Computer Science 101"
 }
