@@ -76,6 +76,15 @@ The `file_url` is constructed using the centralized URL detection utility:
     "chunks_analyzed": 45,           // Integer: Number of text chunks processed
     "confidence": 0.87               // Float: Confidence level (0-1)
   },
+  "plagiarism_analysis": {
+    "plagiarism_score": 32.8,       // Float: Overall plagiarism percentage (0-100)
+    "risk_level": "moderate",        // String: "low", "moderate", "high", "critical"
+    "contributing_factors": [        // Array: Factors contributing to plagiarism score
+      "high_similarity_matches",
+      "ai_generated_content", 
+      "improper_citations"
+    ]
+  },
   "report_html": "<!DOCTYPE html>...",  // String: Complete HTML report (REQUIRED)
   "errors": [                          // Array: Optional error messages
     "Warning: Limited database coverage for this file type"
@@ -92,6 +101,9 @@ The `file_url` is constructed using the centralized URL detection utility:
   },
   "ai_analysis": {
     "ai_percentage": 0
+  },
+  "plagiarism_analysis": {
+    "plagiarism_score": 0
   },
   "report_html": "<!DOCTYPE html><html><head><title>Report</title></head><body><h1>Analysis Complete</h1></body></html>"
 }

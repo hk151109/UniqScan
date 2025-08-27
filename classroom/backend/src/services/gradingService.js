@@ -75,13 +75,19 @@ const getGradingScores = async (filePath, studentInfo, homeworkInfo, classroomIn
       // Extract similarity score
       if (results.similarity_analysis) {
         similarityScore = results.similarity_analysis.similarity_score || 0;
-        // Use similarity score as plagiarism score for backward compatibility
-        plagiarismScore = similarityScore;
       }
 
       // Extract AI score
       if (results.ai_analysis) {
         aiGeneratedScore = results.ai_analysis.ai_percentage || 0;
+      }
+
+      // Extract plagiarism score (separate from similarity)
+      if (results.plagiarism_analysis) {
+        plagiarismScore = results.plagiarism_analysis.plagiarism_score || 0;
+      } else {
+        // Fallback: Use similarity score as plagiarism score if not provided separately
+        plagiarismScore = similarityScore;
       }
 
       // Extract HTML report content from ML API response

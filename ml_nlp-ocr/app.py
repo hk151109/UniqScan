@@ -917,14 +917,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# in the classroom ananlyse the code files and structure and everything and help me make changes so the
-# files when stored are noted the order in ehich they are uploaded so that if later files if uploaded are
-# same that is plagiarised then it can be said it is similar to previous submissions for such matching use
-# the matching algorithm in the Matcher_algo\plag-detect.py and check if they are similar and also refer
-# ml_nlp-ocr\app.py for handling files when uploaded in the website. also make it modular as later we will
-# also integrate another model to t=detect if the uploaded assignments are ai-geenrated, so steps -
-# upload handled, upload files preprocessed and stored and logged and ordered and anything else we might
-# need, then uploaded files compared using the plag-detecct algo by sending data thought api as it will
-# also need to send data to another module for ai detection which will be done later

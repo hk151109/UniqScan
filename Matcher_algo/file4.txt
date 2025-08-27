@@ -4,7 +4,11 @@ PDF Report Generation: The new code creates detailed PDF reports with proper for
 Consistent File Naming: Reports are named plagiarismReport_originalfilename.pdf as requested.
 Visual Highlighting: Plagiarized text is highlighted in red within the PDF.
 Citation References: Each plagiarized section includes its citation number in the PDF.
+
+
 Customized Styling: The PDF includes properly styled headings, tables, and content sections.
+
+
 Color-Coding: Similarity scores are color-coded (red for high similarity, orange for medium, green for low).
 
 The PDF report provides a more professional and shareable format compared to HTML reports, while maintaining all the essential information. The code still generates the text report for reference, but you can remove that part if you only want the PDF version.

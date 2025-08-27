@@ -1,84 +1,232 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Plagiarism Analysis Report - HarikrishnanGopal_SE_resume.pdf</title>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plagiarism Analysis Report - John Doe</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.6; }
-        h1, h2, h3 { color: #2c3e50; }
-        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                   color: white; padding: 30px; border-radius: 10px; margin-bottom: 30px; }
-        .file-info { background-color: #f8f9fa; padding: 20px; border-radius: 8px; 
-                     margin-bottom: 25px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .similarity-score { font-size: 28px; font-weight: bold; margin: 10px 0; }
-        .ai-score { font-size: 24px; font-weight: bold; margin: 10px 0; }
-        .high-similarity { color: #e74c3c; }
-        .medium-similarity { color: #f39c12; }
-        .low-similarity { color: #27ae60; }
-        .analysis-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px; }
-        .analysis-card { background: white; padding: 25px; border-radius: 10px; 
-                         box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-left: 5px solid #3498db; }
-        .metric { text-align: center; margin: 15px 0; }
-        .metric-label { font-size: 14px; color: #7f8c8d; font-weight: 500; }
-        .metric-value { font-size: 32px; font-weight: bold; color: #2c3e50; }
-        .detailed-matches { margin-top: 30px; }
-        .match-item { background: #fff; border: 1px solid #e1e8ed; border-radius: 8px; 
-                      margin-bottom: 15px; padding: 20px; }
-        .match-header { font-weight: bold; color: #2c3e50; margin-bottom: 10px; }
-        .match-text { background: #f8f9fa; padding: 15px; border-radius: 5px; 
-                      font-family: 'Courier New', monospace; border-left: 4px solid #3498db; }
-        .footer { text-align: center; margin-top: 50px; color: #7f8c8d; 
-                  border-top: 1px solid #e1e8ed; padding-top: 20px; }
-        @media (max-width: 768px) {
-            .analysis-grid { grid-template-columns: 1fr; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f8f9fa;
+            color: #333;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            font-weight: 300;
+        }
+        .content {
+            padding: 30px;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .info-card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        .info-card h3 {
+            margin: 0 0 10px 0;
+            color: #667eea;
+            font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .info-card p {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 500;
+        }
+        .scores-section {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            margin: 30px 0;
+        }
+        .score-card {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-top: 4px solid;
+        }
+        .score-card.similarity {
+            border-top-color: #3498db;
+        }
+        .score-card.ai-detection {
+            border-top-color: #e74c3c;
+        }
+        .score-card.plagiarism {
+            border-top-color: #f39c12;
+        }
+        .score-card h3 {
+            margin: 0 0 15px 0;
+            font-size: 18px;
+            font-weight: 600;
+        }
+        .score-display {
+            font-size: 36px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .low-risk { color: #27ae60; }
+        .medium-risk { color: #f39c12; }
+        .high-risk { color: #e74c3c; }
+        .critical-risk { color: #c0392b; }
+        .analysis-details {
+            margin-top: 30px;
+        }
+        .details-card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .details-card h4 {
+            margin: 0 0 15px 0;
+            color: #2c3e50;
+        }
+        .matches-list {
+            list-style: none;
+            padding: 0;
+        }
+        .matches-list li {
+            background: white;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            border-left: 3px solid #3498db;
+        }
+        .risk-factors {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .risk-factor {
+            background: #e74c3c;
+            color: white;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .footer {
+            background: #2c3e50;
+            color: white;
+            text-align: center;
+            padding: 20px;
+            font-size: 12px;
+        }
+        .interpretation {
+            font-style: italic;
+            color: #666;
+            margin-top: 5px;
         }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>Analysis Report</h1>
-        <p style="margin: 0; font-size: 16px; opacity: 0.9;">Comprehensive analysis of academic integrity</p>
-    </div>
-    
-    <div class="file-info">
-        <h2>Document Information</h2>
-        <p><strong>Student:</strong> John Doe</p>
-        <p><strong>Filename:</strong> HarikrishnanGopal_SE_resume.pdf</p>
-        <p><strong>Analysis Date:</strong> 2025-08-27 12:27:31</p>
-    </div>
-    
-    <div class="analysis-grid">
-        <div class="analysis-card">
-            <h3>Similarity Analysis</h3>
-            <div class="metric">
-                <div class="metric-label">Similarity Score</div>
-                <div class="metric-value low-similarity">0.0%</div>
+    <div class="container">
+        <div class="header">
+            <h1>Plagiarism Analysis Report</h1>
+            <p>Comprehensive academic integrity assessment</p>
+        </div>
+        
+        <div class="content">
+            <div class="info-grid">
+                <div class="info-card">
+                    <h3>Student</h3>
+                    <p>John Doe</p>
+                </div>
+                <div class="info-card">
+                    <h3>Classroom</h3>
+                    <p>Computer Science 101</p>
+                </div>
+                <div class="info-card">
+                    <h3>Assignment ID</h3>
+                    <p>64a1b2c3d4e5f6789012345b</p>
+                </div>
+                <div class="info-card">
+                    <h3>Analysis Date</h3>
+                    <p>2025-08-27 17:04:32</p>
+                </div>
             </div>
-            <div class="metric">
-                <div class="metric-label">Total Comparisons</div>
-                <div class="metric-value">3</div>
+            
+            <div class="scores-section">
+                <div class="score-card similarity">
+                    <h3>Similarity Analysis</h3>
+                    <div class="score-display high-risk">
+                        53.1%
+                    </div>
+                    <p>Compared against 3 documents</p>
+                </div>
+                
+                <div class="score-card ai-detection">
+                    <h3>AI Detection</h3>
+                    <div class="score-display high-risk">
+                        35.4%
+                    </div>
+                    <p class="interpretation">High AI probability</p>
+                    <p>Confidence: 0.79</p>
+                </div>
+                
+                <div class="score-card plagiarism">
+                    <h3>Overall Plagiarism Score</h3>
+                    <div class="score-display high-risk">
+                        46.0%
+                    </div>
+                    <p>Risk Level: <strong>HIGH</strong></p>
+                    <div class="risk-factors">
+                        <span class="risk-factor">High Similarity Matches</span> <span class="risk-factor">Ai Generated Content</span> <span class="risk-factor">Multiple Detection Methods</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="analysis-details">
+                
+                <div class="details-card">
+                    <h4>Similarity Matches Found</h4>
+                    <ul class="matches-list">
+                        <li><strong>Sample Academic Paper 1.pdf</strong><br>Similarity: 53.12%<br><em>This is a sample academic paper discussing various topics in computer science and technology. The methodology involves comprehensive analysis of existing literature and implementation of novel algorit...</em></li>
+                    </ul>
+                </div>
+                
+                
+                <div class="details-card">
+                    <h4>AI Detection Analysis</h4>
+                    <p>Analyzed 1 text segments with 0.79 confidence level.</p>
+                    <p><strong>Interpretation:</strong> High AI probability</p>
+                </div>
             </div>
         </div>
         
-        <div class="analysis-card">
-            <h3>AI Content Detection</h3>
-            <div class="metric">
-                <div class="metric-label">AI Probability</div>
-                <div class="metric-value medium-similarity">20.05%</div>
-            </div>
-            <p><strong>Interpretation:</strong> Low AI probability</p>
-            <p><strong>Confidence:</strong> 0.73</p>
+        <div class="footer">
+            <p>Generated by Academic Integrity Analysis System | 2025-08-27 17:04:32</p>
+            <p>This report is confidential and intended solely for academic evaluation purposes.</p>
         </div>
-    </div>
-    <div class="detailed-matches">
-        <div class="analysis-card">
-            <h3>Original Content</h3>
-            <p>No significant similarities found with existing documents. This appears to be original work.</p>
-        </div>
-    </div>
-    <div class="footer">
-        <p>Generated by Academic Integrity Analysis System</p>
-        <p>This report is confidential and intended for educational purposes only.</p>
     </div>
 </body>
 </html>
