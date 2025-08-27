@@ -1,8 +1,0 @@
-PLAGIARISM REPORT
-=================
-
-File: file1.txt
-Analysis Date: 2025-08-27 13:51:34
-Overall Similarity Score: 0%
-
-No similarities found. This content appears to be original.
