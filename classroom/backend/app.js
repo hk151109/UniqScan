@@ -23,6 +23,10 @@ app.use(
   })
 );
 
+// Serve static files (uploads) for external access
+const path = require("path");
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
+
 // router
 app.use("/api", router);
 

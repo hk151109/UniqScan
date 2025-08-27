@@ -9,14 +9,10 @@ const path = require("path");
 const addHomework = asyncHandler(async (req, res, next) => {
   const { title, content, endTime } = req.body;
   const classroom = req.classroom;
-  const homework = await Homework({
-    title,
-    content,
-    endTime,
-    teacher: req.user.id,
-    classroom: classroom._id,
-    appointedStudents: classroom.students,
-  });
+  const homework = new Homework({ title, content, endTime });
+  homework.teacher = req.user.id;
+  homework.classroom = classroom._id;
+  homework.appointedStudents = classroom.students;
   homework.save();
   await classroom.homeworks.push(homework._id);
   await classroom.save();
@@ -35,25 +31,145 @@ const submitHomework = asyncHandler(async (req, res, next) => {
   // Fetch full user details including name
   const fullUser = await require('../models/User').findById(user.id);
   
+  // Check if user has already submitted this homework
+  const existingSubmission = await Project.findOne({ 
+    user: user.id, 
+    homework: homework._id 
+  });
+  
   // Ensure name and title are present
   const studentName = fullUser && fullUser.name ? fullUser.name.replace(/[^a-zA-Z0-9]/g, '_') : `student_${user && user.id ? user.id : 'unknown'}`;
   const classroomTitle = classroom && classroom.title ? classroom.title.replace(/[^a-zA-Z0-9]/g, '_') : `class_${classroom && classroom._id ? classroom._id : 'unknown'}`;
   const ext = req.file.originalname.split('.').pop();
-  const filename = `${studentName}_${classroomTitle}_${homework._id}.${ext}`;
+  
+  // For resubmissions, use the same filename as the original submission
+  // For new submissions, create a new filename
+  let filename;
+  if (existingSubmission && existingSubmission.file) {
+    // For resubmissions, keep the same base name but update extension if needed
+    const existingFilename = existingSubmission.file;
+    const existingBaseName = existingFilename.substring(0, existingFilename.lastIndexOf('.'));
+    const newExt = req.file.originalname.split('.').pop();
+    
+    // Check if extension changed
+    const existingExt = existingFilename.split('.').pop();
+    if (existingExt.toLowerCase() !== newExt.toLowerCase()) {
+      // Extension changed, need to delete old file and use new filename
+      filename = `${existingBaseName}.${newExt}`;
+      
+      const fs = require('fs');
+      // Delete the old file with different extension
+      const oldFilePath = path.join(path.dirname(req.file.path), existingFilename);
+      if (fs.existsSync(oldFilePath)) {
+        try {
+          fs.unlinkSync(oldFilePath);
+          // console.log(`Deleted old file with different extension: ${oldFilePath}`);
+        } catch (error) {
+          console.error(`Could not delete old file: ${error.message}`);
+        }
+      }
+    } else {
+      // Same extension, use the same filename (will overwrite)
+      filename = existingFilename;
+    }
+    // console.log(`Resubmission: Using filename: ${filename}`);
+  } else {
+    // New submission: create new filename
+    filename = `${studentName}_${classroomTitle}_${homework._id}.${ext}`;
+    // console.log(`New submission: Created filename: ${filename}`);
+  }
+  
   const fs = require('fs');
   const oldPath = req.file.path;
   const newPath = path.join(path.dirname(oldPath), filename);
+  
+  // console.log(`Original uploaded file path: ${oldPath}`);
+  // console.log(`Target file path: ${newPath}`);
+  // console.log(`File directory: ${path.dirname(oldPath)}`);
+  
+  // Check if the uploaded file exists
   if (!fs.existsSync(oldPath)) {
     return next(new CustomError(`Uploaded file not found: ${oldPath}`, 400));
   }
-  fs.renameSync(oldPath, newPath);
+  
+  // Rename the file to our desired filename
+  try {
+    fs.renameSync(oldPath, newPath);
+    // console.log(`Successfully renamed file to: ${newPath}`);
+  } catch (error) {
+    console.error(`Failed to rename file: ${error.message}`);
+    return next(new CustomError(`Failed to rename file: ${error.message}`, 500));
+  }
 
-  // Save project with new filename
-  const project = await Project({ user: user.id, file: filename });
-  if (project.createdAt > homework.endTime) {
+  let project;
+  let isResubmission = false;
+
+  if (existingSubmission) {
+    // This is a resubmission - update existing project
+    isResubmission = true;
+    
+    // For resubmissions, we're using the same filename, so the new file will overwrite the old one
+    // No need to delete the old file since it has the same name
+    // console.log(`Resubmission: Will overwrite existing file: ${filename}`);
+    
+    // Update existing project
+    existingSubmission.file = filename; // This should be the same as before
+    existingSubmission.originalFileName = req.file.originalname;
+    existingSubmission.updatedAt = new Date();
+    existingSubmission.isResubmission = true;
+    existingSubmission.submissionVersion += 1;
+    existingSubmission.score = null;
+    existingSubmission.similarityScore = null;
+    existingSubmission.aiGeneratedScore = null;
+    existingSubmission.plagiarismScore = null;
+    existingSubmission.reportPath = null;
+    existingSubmission.gradingCompleted = false;
+    existingSubmission.gradingError = null;
+    
+    // console.log(`Updated project filename: ${filename}`);
+    
+    project = existingSubmission;
+  } else {
+    // Create new project for first submission
+    project = new Project({ 
+      user: user.id, 
+      homework: homework._id,
+      file: filename,
+      originalFileName: req.file.originalname,
+      isResubmission: false,
+      submissionVersion: 1
+    });
+  }
+
+  if (project.createdAt > homework.endTime && !isResubmission) {
     return next(new CustomError("Sorry, the deadline for homework is late.", 400));
   }
+  
+  // Save the project (whether new or updated)
   await project.save();
+  
+  // console.log(`Project saved with filename: ${project.file}`);
+  // console.log(`Project ID: ${project._id}`);
+  // console.log(`Is resubmission: ${isResubmission}`);
+
+  // Ensure the project is in the homework's submitters list
+  if (!homework.submitters.includes(project._id)) {
+    homework.submitters.push(project._id);
+  }
+  
+  // For new submissions, remove from appointedStudents
+  if (!isResubmission && homework.appointedStudents.includes(user.id)) {
+    homework.appointedStudents.splice(
+      homework.appointedStudents.indexOf(user.id),
+      1
+    );
+  }
+  
+  // Update homework's updatedAt timestamp so teachers know there's a change
+  homework.updatedAt = new Date();
+  
+  // Save homework with updated submitters list
+  await homework.save();
 
   // Enqueue grading job
   const { addGradingJob } = require('../services/gradingQueue');
@@ -63,24 +179,20 @@ const submitHomework = asyncHandler(async (req, res, next) => {
     filePath: newPath,
     userName: studentName,
   });
-  // Mark project as processing
-  project.similarityScore = null;
-  project.aiGeneratedScore = null;
-  project.plagiarismScore = null;
-  project.reportPath = null;
-  await project.save();
-
-  await homework.appointedStudents.splice(
-    homework.appointedStudents.indexOf(user.id),
-    1
-  );
-  await homework.submitters.push(project._id);
-  await homework.save();
-  return res.status(200).json({ success: true, data: homework });
+  
+  return res.status(200).json({ 
+    success: true, 
+    data: homework,
+    project: project,
+    isResubmission: isResubmission,
+    message: isResubmission ? 'Homework resubmitted successfully' : 'Homework submitted successfully'
+  });
 });
 
 const getHomework = asyncHandler(async (req, res, next) => {
   const { homeworkID } = req.params;
+  // console.log(`Fetching homework details for ID: ${homeworkID}`);
+  
   const homework = await Homework.findById(homeworkID)
     .populate({
       path: "submitters",
@@ -95,6 +207,14 @@ const getHomework = asyncHandler(async (req, res, next) => {
       path: "teacher",
       select: "name lastname",
     });
+  
+  // console.log(`Found homework with ${homework?.submitters?.length || 0} submitters`);
+  if (homework?.submitters) {
+    homework.submitters.forEach((submitter, index) => {
+      // console.log(`Submitter ${index + 1}: ${submitter.user?.name}, File: ${submitter.file}, Updated: ${submitter.updatedAt}`);
+    });
+  }
+  
   return res.status(200).json({ success: true, homework });
 });
 
@@ -139,24 +259,13 @@ const exportScores = asyncHandler(async (req, res, next) => {
   homework.submitters.forEach((project) => {
     let { user, score } = project;
     let data = {};
-    data.name = user.name;
-    data.lastname = user.lastname;
-    data.score = score;
+    data["name"] = user.name;
+    data["lastname"] = user.lastname;
+    data["score"] = score;
     projects.push(data);
   });
 
-  homework.appointedStudents.forEach((student) => {
-    let data = {};
-    data.name = student.name;
-    data.lastname = student.lastname;
-    data.score = 0;
-    projects.push(data);
-  });
-
-  const excelFile = await excelCreater(projects, classroom.accessCode);
-  homework.scoreTable = excelFile;
-  homework.save();
-
+  const excelFile = await excelCreater(classroom.title, homework.title, projects);
   const appPath = path.resolve();
   const filePath = "/public/uploads/excels";
   const myPath = path.join(appPath, filePath, excelFile);
@@ -168,6 +277,15 @@ const sendHomeworkFile = asyncHandler(async (req, res, next) => {
   const filePath = "/public/uploads/homeworks";
   const { filename } = req.params;
   const myPath = path.join(appPath, filePath, filename);
+  
+  // console.log(`Attempting to send file: ${myPath}`);
+  // console.log(`File exists: ${require('fs').existsSync(myPath)}`);
+  
+  if (!require('fs').existsSync(myPath)) {
+    // console.log(`File not found: ${myPath}`);
+    return next(new CustomError(`File not found: ${filename}`, 404));
+  }
+  
   return res.status(200).sendFile(myPath);
 });
 
@@ -179,7 +297,7 @@ const deleteHomework = asyncHandler(async (req, res, next) => {
   }
   classroom.homeworks.splice(classroom.homeworks.indexOf(homework._id), 1);
   await classroom.save();
-  await homework.remove();
+  await Homework.findByIdAndDelete(homework._id);
   return res.status(200).json({ success: true });
 });
 
@@ -199,6 +317,86 @@ const checkMLAPIHealth = asyncHandler(async (req, res, next) => {
   res.json(health);
 });
 
+// Get student's submission status for a homework
+const getMySubmission = asyncHandler(async (req, res, next) => {
+  const { homeworkID } = req.params;
+  const user = req.user;
+  
+  const submission = await Project.findOne({ 
+    user: user.id, 
+    homework: homeworkID 
+  }).populate('homework', 'title endTime');
+  
+  if (!submission) {
+    return res.status(200).json({ 
+      success: true, 
+      submitted: false, 
+      message: 'No submission found' 
+    });
+  }
+  
+  return res.status(200).json({ 
+    success: true, 
+    submitted: true,
+    submission: {
+      _id: submission._id,
+      file: submission.file,
+      originalFileName: submission.originalFileName,
+      createdAt: submission.createdAt,
+      updatedAt: submission.updatedAt,
+      score: submission.score,
+      similarityScore: submission.similarityScore,
+      aiGeneratedScore: submission.aiGeneratedScore,
+      plagiarismScore: submission.plagiarismScore,
+      gradingCompleted: submission.gradingCompleted,
+      isResubmission: submission.isResubmission,
+      submissionVersion: submission.submissionVersion,
+      homework: submission.homework,
+      // Status logic: only graded when teacher has given a manual score
+      isGraded: submission.score !== null && submission.score !== undefined,
+      teacherScore: submission.score
+    }
+  });
+});
+
+// Get all submissions by current student across all homeworks
+const getMySubmissions = asyncHandler(async (req, res, next) => {
+  const user = req.user;
+  
+  const submissions = await Project.find({ user: user.id })
+    .populate('homework', 'title endTime classroom')
+    .populate({
+      path: 'homework',
+      populate: {
+        path: 'classroom',
+        select: 'title accessCode'
+      }
+    })
+    .sort({ updatedAt: -1 });
+  
+  return res.status(200).json({ 
+    success: true, 
+    submissions: submissions.map(sub => ({
+      _id: sub._id,
+      file: sub.file,
+      originalFileName: sub.originalFileName,
+      createdAt: sub.createdAt,
+      updatedAt: sub.updatedAt,
+      score: sub.score,
+      similarityScore: sub.similarityScore,
+      aiGeneratedScore: sub.aiGeneratedScore,
+      plagiarismScore: sub.plagiarismScore,
+      gradingCompleted: sub.gradingCompleted,
+      isResubmission: sub.isResubmission,
+      submissionVersion: sub.submissionVersion,
+      homework: sub.homework,
+      // Status logic: only graded when teacher has given a manual score
+      isGraded: sub.score !== null && sub.score !== undefined,
+      teacherScore: sub.score
+    }))
+  });
+});
+
 module.exports = {
   addHomework,
   submitHomework,
@@ -210,4 +408,6 @@ module.exports = {
   deleteHomework,
   getGradingStatus,
   checkMLAPIHealth,
+  getMySubmission,
+  getMySubmissions,
 };

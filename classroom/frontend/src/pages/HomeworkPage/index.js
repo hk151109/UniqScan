@@ -15,6 +15,9 @@ import RateProjectOffCanvas from "../../components/MyOffCanvas/RateProjectOffCan
 import DocumentViewer from "../../components/DocumentViewer";
 import { AuthContext } from "../../contexts/authContext";
 
+// Get BASE_URL for constructing report links
+const BASE_URL = process.env.REACT_APP_BASE_URL;
+
 const HomeworkPage = () => {
   const { homeworkID } = useParams();
   const navigate = useNavigate();
@@ -27,15 +30,22 @@ const HomeworkPage = () => {
 
   useEffect(() => {
     const getHomeworkDetail = async () => {
-      const { data } = await fetchHomeworkDetail(homeworkID);
-      setHomework({ ...data.homework });
+      try {
+        console.log('Fetching homework detail for ID:', homeworkID);
+        const { data } = await fetchHomeworkDetail(homeworkID);
+        console.log('Homework data received:', data.homework);
+        setHomework({ ...data.homework });
+      } catch (error) {
+        console.error('Error fetching homework detail:', error);
+      }
     };
     getHomeworkDetail();
   }, [homeworkID, showModals]); // Update when modals change
 
-  // Polling effect for grading status
+  // Polling effect for grading status and homework updates
   useEffect(() => {
     let intervalId;
+    let refreshCounter = 0;
     
     const checkGradingStatus = async () => {
       try {
@@ -48,8 +58,19 @@ const HomeworkPage = () => {
           totalSubmissions: totalSubmissions
         });
 
-        if (!gradingInProgress) {
-          // Refresh homework data when grading is complete
+        refreshCounter++;
+        
+        // Refresh homework data frequently to catch new submissions and resubmissions
+        if (!gradingInProgress && refreshCounter >= 3) { // Every 15 seconds (3 * 5 seconds)
+          console.log('Periodic refresh: Fetching latest homework data...');
+          const { data } = await fetchHomeworkDetail(homeworkID);
+          setHomework({ ...data.homework });
+          refreshCounter = 0;
+        }
+        
+        // Always refresh when grading completes
+        if (!gradingInProgress && gradingStatus.inProgress) {
+          console.log('Grading completed: Refreshing homework data...');
           const { data } = await fetchHomeworkDetail(homeworkID);
           setHomework({ ...data.homework });
         }
@@ -69,7 +90,7 @@ const HomeworkPage = () => {
         clearInterval(intervalId);
       }
     };
-  }, [homeworkID]);
+  }, [homeworkID, gradingStatus.inProgress]);
 
   const downloadFile = async (filename, userName, userLastname) => {
     const homeworkTitle = homework?.title ? homework.title.replace(/[^a-zA-Z0-9]/g, '_') : 'Homework';
@@ -131,6 +152,16 @@ const HomeworkPage = () => {
     setDocumentViewer({ show: false, fileUrl: '', fileName: '', fileType: '' });
   };
 
+  const handleManualRefresh = async () => {
+    console.log('Manual refresh triggered');
+    try {
+      const { data } = await fetchHomeworkDetail(homeworkID);
+      setHomework({ ...data.homework });
+    } catch (error) {
+      console.error('Error during manual refresh:', error);
+    }
+  };
+
   return (
     <Container className="mt-4">
       <Button variant="outline-primary" className="mb-3" onClick={() => navigate(-1)}>
@@ -149,30 +180,40 @@ const HomeworkPage = () => {
         <Col className="text-end">
           THE LAST DAY : {moment(homework.endTime).format("DD.MM.YYYY")}
           <br />
-          <Button
-            size="sm"
-            variant="success"
-            onClick={() => downloadExcelFile(homeworkID)}
-            disabled={lock}
-          >
-            {lock ? (
-              <>
-                <Spinner
-                  as="span"
-                  animation="grow"
-                  size="sm"
-                  role="status"
-                  aria-hidden="true"
-                  className="me-2"
-                />
-                Loading...
-              </>
-            ) : (
-              <>
-                <SiMicrosoftexcel className="me-2" /> Download student grades
-              </>
-            )}
-          </Button>
+          <div className="d-flex justify-content-end gap-2 mt-2">
+            <Button
+              size="sm"
+              variant="outline-primary"
+              onClick={handleManualRefresh}
+              title="Refresh homework data"
+            >
+              🔄 Refresh
+            </Button>
+            <Button
+              size="sm"
+              variant="success"
+              onClick={() => downloadExcelFile(homeworkID)}
+              disabled={lock}
+            >
+              {lock ? (
+                <>
+                  <Spinner
+                    as="span"
+                    animation="grow"
+                    size="sm"
+                    role="status"
+                    aria-hidden="true"
+                    className="me-2"
+                  />
+                  Loading...
+                </>
+              ) : (
+                <>
+                  <SiMicrosoftexcel className="me-2" /> Download student grades
+                </>
+              )}
+            </Button>
+          </div>
         </Col>
       </Row>
       <hr className="bg-primary" />
@@ -229,7 +270,7 @@ const HomeworkPage = () => {
                   <td>{submitter.plagiarismScore !== undefined && submitter.plagiarismScore !== null ? submitter.plagiarismScore : '-'}</td>
                   <td>
                     {submitter.reportPath ? (
-                      <a href={submitter.reportPath} target="_blank" rel="noopener noreferrer">View Report</a>
+                      <a href={`${BASE_URL}${submitter.reportPath}`} target="_blank" rel="noopener noreferrer">View Report</a>
                     ) : '-'}
                   </td>
                   <td>

@@ -1,0 +1,82 @@
+{
+  "files": [
+    {
+      "id": "64a1b2c3d4e5f6789012345a_64a1b2c3d4e5f6789012345b_1756276925",
+      "student_id": "64a1b2c3d4e5f6789012345a",
+      "student_name": "John Doe",
+      "assignment_id": "64a1b2c3d4e5f6789012345b",
+      "classroom_name": "Computer Science 101",
+      "filename": "Student1_plag_test_68adf59efd285acbf331fffa.pdf",
+      "file_path": "homework\\Student1_plag_test_68adf59efd285acbf331fffa.pdf",
+      "content_checksum": "eac6389c212aa1eff4de958f23609ead",
+      "upload_timestamp": "2025-08-27T12:12:05.015739",
+      "similarity_score": 0.0,
+      "ai_score": 78.39
+    },
+    {
+      "id": "64a1b2c3d4e5f6789012345a_64a1b2c3d4e5f6789012345b_1756277114",
+      "student_id": "64a1b2c3d4e5f6789012345a",
+      "student_name": "John Doe",
+      "assignment_id": "64a1b2c3d4e5f6789012345b",
+      "classroom_name": "Computer Science 101",
+      "filename": "Student1_plag_test_68adf59efd285acbf331fffa.pdf",
+      "file_path": "homework\\Student1_plag_test_68adf59efd285acbf331fffa.pdf",
+      "content_checksum": "eac6389c212aa1eff4de958f23609ead",
+      "upload_timestamp": "2025-08-27T12:15:14.492958",
+      "similarity_score": 0.0,
+      "ai_score": 63.92
+    },
+    {
+      "id": "64a1b2c3d4e5f6789012345a_64a1b2c3d4e5f6789012345b_1756277223",
+      "student_id": "64a1b2c3d4e5f6789012345a",
+      "student_name": "John Doe",
+      "assignment_id": "64a1b2c3d4e5f6789012345b",
+      "classroom_name": "Computer Science 101",
+      "filename": "HarikrishnanGopal_SE_resume.pdf",
+      "file_path": "homework\\HarikrishnanGopal_SE_resume.pdf",
+      "content_checksum": "748122393031c1b8ced7da1d72ddda42",
+      "upload_timestamp": "2025-08-27T12:17:03.874830",
+      "similarity_score": 0.0,
+      "ai_score": 11.45
+    },
+    {
+      "id": "64a1b2c3d4e5f6789012345a_64a1b2c3d4e5f6789012345b_1756277851",
+      "student_id": "64a1b2c3d4e5f6789012345a",
+      "student_name": "John Doe",
+      "assignment_id": "64a1b2c3d4e5f6789012345b",
+      "classroom_name": "Computer Science 101",
+      "filename": "HarikrishnanGopal_SE_resume.pdf",
+      "file_path": "homework\\HarikrishnanGopal_SE_resume.pdf",
+      "content_checksum": "748122393031c1b8ced7da1d72ddda42",
+      "upload_timestamp": "2025-08-27T12:27:31.237931",
+      "similarity_score": 0.0,
+      "ai_score": 20.05
+    },
+    {
+      "id": "68a44c50fe872b51af5def2e_68ae03da8572d0fcd8d26e7c_1756278052",
+      "student_id": "68a44c50fe872b51af5def2e",
+      "student_name": "Student1 plag",
+      "assignment_id": "68ae03da8572d0fcd8d26e7c",
+      "classroom_name": "plag-test",
+      "filename": "Student1_plag_test_68ae03da8572d0fcd8d26e7c.pdf",
+      "file_path": "homework\\Student1_plag_test_68ae03da8572d0fcd8d26e7c.pdf",
+      "content_checksum": "201323109d75f44f403aca9bec4a0c45",
+      "upload_timestamp": "2025-08-27T12:30:52.499705",
+      "similarity_score": 0.0,
+      "ai_score": 79.05
+    },
+    {
+      "id": "68a44c50fe872b51af5def2e_68aeb6e9e076161a03b26740_1756280595",
+      "student_id": "68a44c50fe872b51af5def2e",
+      "student_name": "Student1 plag",
+      "assignment_id": "68aeb6e9e076161a03b26740",
+      "classroom_name": "plag-test",
+      "filename": "Student1_plag_test_68aeb6e9e076161a03b26740.pdf",
+      "file_path": "homework\\Student1_plag_test_68aeb6e9e076161a03b26740.pdf",
+      "content_checksum": "4b7cd76ace896b26a41253d8e74e5edd",
+      "upload_timestamp": "2025-08-27T13:13:15.989968",
+      "similarity_score": 0.0,
+      "ai_score": 92.77
+    }
+  ]
+}

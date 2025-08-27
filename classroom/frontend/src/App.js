@@ -7,6 +7,7 @@ import {
   HomePage,
   HomeworkPage,
   ClassroomPage,
+  SubmissionsPage,
   ErrorPage,
 } from "./pages/index";
 import { useContext } from "react";
@@ -29,8 +30,10 @@ function App() {
         {/* End of NonPrivateRoutes */}
         {/* PrivateRoutes */}
         <Route element={<PrivateRoutes isLoggin={isLoggin} />}>
+          <Route path="/home" element={<HomePage />} />
           <Route path="/classroom/:classroomID" element={<ClassroomPage />} />
           <Route path="/homework/:homeworkID" element={<HomeworkPage />} />
+          <Route path="/my-submissions" element={<SubmissionsPage />} />
         </Route>
         {/* End of PrivateRoutes */}
         <Route path="*" element={<ErrorPage />} />

@@ -4,4 +4,5 @@ export { default as RegisterPage } from "./RegisterPage";
 export { default as HomePage } from "./HomePage";
 export { default as ClassroomPage } from "./ClassroomPage";
 export { default as HomeworkPage } from "./HomeworkPage";
+export { default as SubmissionsPage } from "./SubmissionsPage";
 export { default as ErrorPage } from "./ErrorPage";

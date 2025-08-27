@@ -8,6 +8,14 @@ HomeworkSchema = new Schema({
   },
   content: String,
   endTime: Date,
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now,
+  },
   teacher: {
     type: mongoose.Types.ObjectId,
     ref: "User",
@@ -29,6 +37,14 @@ HomeworkSchema = new Schema({
     },
   ],
   scoreTable: String,
+});
+
+// Update the updatedAt field before saving
+HomeworkSchema.pre('save', function(next) {
+  if (this.isModified() && !this.isNew) {
+    this.updatedAt = new Date();
+  }
+  next();
 });
 
 const Homework = mongoose.model("Homework", HomeworkSchema);

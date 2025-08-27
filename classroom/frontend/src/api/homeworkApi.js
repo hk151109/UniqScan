@@ -20,7 +20,9 @@ export const fetchSubmitHomework = async (homeworkID, inputs) => {
 };
 
 export const fetchHomeworkDetail = async (homeworkID) => {
-  const result = await api.get(`${BASE_URL}/api/homeworks/${homeworkID}`);
+  // Add timestamp to prevent caching
+  const timestamp = new Date().getTime();
+  const result = await api.get(`${BASE_URL}/api/homeworks/${homeworkID}?_t=${timestamp}`);
   return result;
 };
 
@@ -51,5 +53,15 @@ export const fetchDownloadExcelFile = (classroomID, homeworkID) => {
 
 export const fetchGradingStatus = async (homeworkID) => {
   const result = await api.get(`${BASE_URL}/api/homeworks/grading-status/${homeworkID}`);
+  return result;
+};
+
+export const fetchMySubmission = async (homeworkID) => {
+  const result = await api.get(`${BASE_URL}/api/homeworks/my-submission/${homeworkID}`);
+  return result;
+};
+
+export const fetchMySubmissions = async () => {
+  const result = await api.get(`${BASE_URL}/api/homeworks/my-submissions/all`);
   return result;
 };

@@ -1,6 +1,6 @@
 import React, { useContext, useState, useEffect } from "react";
 import { Button, Stack } from "react-bootstrap";
-import { BsPersonCircle } from "react-icons/bs";
+import { BsPersonCircle, BsFileEarmarkText } from "react-icons/bs";
 import { RiLogoutCircleRLine } from "react-icons/ri";
 import { IoAddCircleSharp, IoSchoolSharp } from "react-icons/io5";
 import { useNavigate } from "react-router-dom";
@@ -29,6 +29,14 @@ const ProfileButton = () => {
     <Stack className="ms-auto" direction="horizontal" gap={2}>
       {user.role === "student" ? (
         <>
+          <Button
+            variant="outline-info"
+            size="sm"
+            onClick={() => navigate("/my-submissions")}
+          >
+            <BsFileEarmarkText className="me-2" />
+            My Submissions
+          </Button>
           <Button
             variant="warning"
             size="sm"

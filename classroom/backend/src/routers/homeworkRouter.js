@@ -26,6 +26,22 @@ router.post(
   homeworkController.submitHomework
 );
 
+// Student submission status endpoints - Put these BEFORE the /:homeworkID route
+router.get(
+  "/my-submissions/all",
+  isAuth,
+  isStudent,
+  homeworkController.getMySubmissions
+);
+
+router.get(
+  "/my-submission/:homeworkID",
+  isAuth,
+  isStudent,
+  homeworkCheck,
+  homeworkController.getMySubmission
+);
+
 router.get(
   "/:homeworkID",
   isAuth,
