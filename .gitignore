@@ -1,3 +1,13 @@
 OCR_Neural-Netowrks/data/
 classroom/frontend/node_modules/
 Plagiarism_detection/HC3/
+
+**/plagiarism_reports
+**/files
+
+*.log
+
+ml_nlp-ocr/extracted_images/
+ml_nlp-ocr/failed_processing/
+ml_nlp-ocr/processed_docs/
+ml_nlp-ocr/uploaded_files/
