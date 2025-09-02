@@ -58,9 +58,39 @@ def classify(text: str):
     return full_output, ai_score, human_score
 
 if __name__ == "__main__":
-    text = (
-        "Nice — you’ve built a very thorough training script. Overall it’s solid and mostly correct, but I found a few bugs, potential pitfalls, and suggestions that will make the script more robust, reproducible, and correct (especially metric handling and a couple small lifecycle issues). Below I’ll list the problems (with why they matter) and give minimal, copy-pasteable fixes. I’ll mark the critical ones first."
-    )
+    text = """--- Page 1 ---
+
+Geography of Thane District 
+Topography of Thane District includes several important physical divisions including Sahyadri hill 
+ranges, forest areas, cultivated lands, and two major rivers. Ulhas River and Vaitarna River are the 
+two main rivers of Thane District. Mainly three types of soils are found in Thane District - regur soil, 
+red soil and brownish black soil. Regur soil, which is found in Dahanu, Palghar, Vasai and Thane 
+tehsils, is fertile and useful for horticulture, paddy cultivation and vegetables. Whereas, red soil 
+which is found in Mokhada, Talasari and some parts of other tehsils on the eastern slopes is useful 
+for growing coarse millets.  
+
+The third type of soil found in Bhiwandi, Kalyan and Shahapur tehsils is useful, particularly for paddy 
+cultivation. Climate of Thane District is basically tropical. However, the climate of coastal plains 
+differs from the climate on the eastern slopes. July is the rainiest month. Minimum temperature 
+recorded here is 17.5 degree Celsius and maximum recorded temperature is 34.4 degree Celsius. 
+Average annual rainfall is 2,576 mm. 
+
+--- Page 1, Image 1 (OCR) ---
+
+In this lab, you will learn how to configure a network to record traffic to and from an Apache web 
+server using VPC Flow Logs. You will then export the logs to BigQuery for analysis. There are multiple 
+use cases for VPC Flow Logs. For example, you might use VPC Flow Logs to determine where your 
+applications are being accessed from to optimize network traffic expense, to create HTTP Load 
+Balancers to balance traffic globally, or to denylist unwanted IP addresses with Cloud Armor.
+
+--- Page 1, Image 2 (OCR) ---
+
+Before you click the Start Lab button Read these instructions. Labs are timed and you cannot pause 
+them. The timer, which starts when you click Start Lab, shows how long Google Cloud resources are 
+made available to you. This hands-on lab lets you do the lab activities in a real cloud environment, 
+not in a simulation or demo environment. It does so by giving you new, temporary credentials you use 
+to sign in and access Google Cloud for the duration of the lab."""
+
 
     full_output, ai_score, human_score = classify(text)
 

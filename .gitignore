@@ -13,5 +13,4 @@ ml_nlp-ocr/processed_docs/
 ml_nlp-ocr/uploaded_files/
 *.env
 
-**/generated_text_detector/
 **/models/

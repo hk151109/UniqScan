@@ -50,6 +50,9 @@ LOGS_DIR = "logs"             # Log files
 for directory in [DOWNLOAD_DIR, TEXT_DIR, REPORTS_DIR, LOGS_DIR]:
     os.makedirs(directory, exist_ok=True)
 
+# External AI score API endpoint (can be overridden via environment variable)
+AI_SCORE_API_URL = f"{os.getenv('AI_SCORE_API_URL', 'http://localhost:8001').rstrip('/')}/classify"
+
 # Initialize Flask app
 app = Flask(__name__)
 
@@ -700,36 +703,34 @@ class Matcher:
 
 
 class AIDetector:
-    """Mock AI detection class - generates random but realistic AI scores"""
-    
-    def __init__(self):
-        self.patterns = [
-            "repetitive sentence structures",
-            "uniform vocabulary complexity",
-            "lack of personal voice",
-            "perfect grammar consistency",
-            "unnatural transitions",
-            "generic examples"
-        ]
-    
+    """Client that calls an external service to get AI-generated score for text."""
+
+    def __init__(self, endpoint: str = AI_SCORE_API_URL, timeout_sec: float = 15.0):
+        self.endpoint = endpoint
+        self.timeout = timeout_sec
+
     def analyze_text(self, text):
-        """Analyze text for AI-generated content"""
-        print("Analyzing text for AI-generated content signatures...")
-        # Mock analysis - in reality, this would use AI detection models
-        word_count = len(text.split())
-        
-        # Generate realistic AI percentage based on text characteristics
-        base_score = random.uniform(5.0, 35.0)
-        
-        # Adjust based on text length (longer texts tend to have lower AI scores)
-        if word_count > 1000:
-            base_score *= 0.8
-        elif word_count < 200:
-            base_score *= 1.2
-            
-        ai_percentage = min(95.0, max(0.0, base_score))
-        
-        # Generate interpretation
+        """Send text to external API and return a normalized analysis dict.
+
+        Expected external API response schema (from e5-small-lora API):
+            { "ai_score": <float in [0,1]> }
+        Returns a structure compatible with existing UI consumers:
+            { ai_percentage, interpretation, chunks_analyzed, confidence }
+        """
+        print("Requesting AI-generated score from external service...")
+        ai_score = 0.0
+        try:
+            r = requests.post(self.endpoint, json={"text": text}, timeout=self.timeout)
+            r.raise_for_status()
+            data = r.json()
+            ai_score = float(data.get("ai_score", 0.0))
+        except Exception as e:
+            logging.warning(f"AI score API call failed: {e}")
+            ai_score = 0.0
+
+        ai_percentage = max(0.0, min(ai_score * 100.0, 100.0))
+
+        # Simple interpretation mapping
         if ai_percentage < 15:
             interpretation = "Low AI probability"
         elif ai_percentage < 35:
@@ -738,23 +739,16 @@ class AIDetector:
             interpretation = "High AI probability"
         else:
             interpretation = "Very high AI probability"
-            
-        # Mock chunks analyzed
-        chunks_analyzed = max(1, word_count // 50)
-        
-        # Mock confidence (higher confidence for more extreme scores)
-        if ai_percentage < 20 or ai_percentage > 70:
-            confidence = random.uniform(0.8, 0.95)
-        else:
-            confidence = random.uniform(0.6, 0.85)
-        
-        print(f"AI analysis complete: {ai_percentage}% probability, {interpretation}")    
-        return {
+
+        # Single-shot classification; keep metadata stable
+        result = {
             "ai_percentage": round(ai_percentage, 1),
             "interpretation": interpretation,
-            "chunks_analyzed": chunks_analyzed,
-            "confidence": round(confidence, 2)
+            "chunks_analyzed": 1,
+            "confidence": 0.8,
         }
+        print(f"AI analysis complete via external service: {result['ai_percentage']}%")
+        return result
 
 
 class PlagiarismAPI:
