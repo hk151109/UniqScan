@@ -1,6 +1,6 @@
 # UniqScan — AI Detection, Similarity, and Classroom Platform
 
-UniqScan combines a MERN-style Classroom app with Python microservices for AI-content detection, PDF/OCR processing, and plagiarism/similarity analysis.
+niqScan is an academic integrity platform that combines a Google Classroom–style MERN web app with Python microservices to analyze student submissions for similarity and AI-generated content. Instructors create classes and assignments; students submit files. The backend serves uploads and orchestrates analysis by calling a Similarity service that extracts text from PDFs, Office docs, and images (via Tesseract and PyMuPDF), compares it against a corpus to compute similarity, and then queries an AI detector to estimate AI-generated probability. Results are fused into an overall plagiarism score and returned with a rich HTML report that the UI renders alongside grades.
 
 ## Table of contents
 - Features
