@@ -118,29 +118,49 @@ Note: Place images in the repository root `assets/` folder as `1.png, 2.png, ...
 
 ![Register](./assets/3.png)
 
-4) Classroom view
+4) Classroom view of Teacher
 
-![Classroom view](./assets/4.png)
+![Classroom view](./assets/6.png)
 
 5) Creating assignment
 
-![Creating assignment](./assets/5.png)
+![Creating assignment](./assets/9.png)
 
 6) Assignment view (Teacher)
 
-![Assignment view by teacher](./assets/6.png)
+![Assignment view by teacher](./assets/10.png)
 
-7) Report (HTML analysis)
+7) Join Class (Student)
 
-![Report](./assets/7.png)
+![Assignment view by teacher](./assets/7.png)
 
-8) Assignment submission (Student)
+8) Classroom view of Student
 
-![Assignment submission by student](./assets/8.png)
+![Classroom view](./assets/8.png)
 
-9) Grade view (Student)
+9) Assignment view (Student)
 
-![Grade view by student](./assets/9.png)
+![Assignment view by student](./assets/11.png)
+
+10) Assignment Submission
+
+![Assignment submission by student](./assets/12.png)
+![](./assets/13.png)
+
+11) Assignment submission Check (Teacher)
+
+![Assignment submission by teacher](./assets/14.png)
+![](./assets/15.png)
+
+
+12) Report (HTML analysis)
+
+![Report](./assets/16.png)
+
+13) Grade view (Student)
+
+![Grade view by student](./assets/17.png)
+![](./assets/18.png)
 
 
 ## Environment variables (summary)
