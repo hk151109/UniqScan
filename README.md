@@ -1,6 +1,7 @@
-# UniqScan — AI Detection, Similarity, and Classroom Platform
+# UniqScan — Advanced Plagiarism Checker
+An AI-enhanced classroom platform that ensures academic honesty by identifying plagiarism and AI-generated content.
 
-niqScan is an academic integrity platform that combines a Google Classroom–style MERN web app with Python microservices to analyze student submissions for similarity and AI-generated content. Instructors create classes and assignments; students submit files. The backend serves uploads and orchestrates analysis by calling a Similarity service that extracts text from PDFs, Office docs, and images (via Tesseract and PyMuPDF), compares it against a corpus to compute similarity, and then queries an AI detector to estimate AI-generated probability. Results are fused into an overall plagiarism score and returned with a rich HTML report that the UI renders alongside grades.
+UniqScan is an academic integrity platform that combines a Google Classroom–style MERN web app with Python microservices to analyze student submissions for similarity and AI-generated content. Instructors create classes and assignments; students submit files. The backend serves uploads and orchestrates analysis by calling a Similarity service that extracts text from PDFs, Office docs, and images (via Tesseract and PyMuPDF), compares it against a corpus to compute similarity, and then queries an AI detector to estimate AI-generated probability. Results are fused into an overall plagiarism score and returned with a rich HTML report that the UI renders alongside grades.
 
 ## Table of contents
 - Features
